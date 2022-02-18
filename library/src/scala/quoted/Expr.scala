@@ -40,7 +40,7 @@ object Expr {
    *  Otherwise returns `None`.
    *
    *  Usage:
-   *  ```scala
+   *  ```scala sc:nocompile
    *  case '{ ... ${expr @ Expr(value)}: T ...} =>
    *    // expr: Expr[T]
    *    // value: T
@@ -69,7 +69,7 @@ object Expr {
    *  to an expression equivalent to
    *    `'{ List($e1, $e2, ...) }` typed as an `Expr[List[T]]`
    */
-  def  ofList[T](xs: Seq[Expr[T]])(using Type[T])(using Quotes): Expr[List[T]] =
+  def ofList[T](xs: Seq[Expr[T]])(using Type[T])(using Quotes): Expr[List[T]] =
     if (xs.isEmpty) Expr(Nil) else '{ List(${Varargs(xs)}: _*) }
 
   /** Creates an expression that will construct a copy of this tuple

@@ -53,7 +53,7 @@ object TypeApplications {
       || {
         val paramRefs = tparams.map(_.paramRef)
         tp.typeParams.corresponds(tparams) { (param1, param2) =>
-          param2.paramInfo <:< param1.paramInfo.substParams(tp, paramRefs)
+          param2.paramInfo frozen_<:< param1.paramInfo.substParams(tp, paramRefs)
         }
       }
 
@@ -230,6 +230,16 @@ class TypeApplications(val self: Type) extends AnyVal {
       val alias = self.dealias
       (alias ne self) && alias.hasSimpleKind
     }
+
+  /** The top type with the same kind as `self`. */
+  def topType(using Context): Type =
+    if self.hasSimpleKind then
+      defn.AnyType
+    else EtaExpand(self.typeParams) match
+      case tp: HKTypeLambda =>
+        tp.derivedLambdaType(resType = tp.resultType.topType)
+      case _ =>
+        defn.AnyKindType
 
   /** If self type is higher-kinded, its result type, otherwise NoType.
    *  Note: The hkResult of an any-kinded type is again AnyKind.
@@ -466,7 +476,8 @@ class TypeApplications(val self: Type) extends AnyVal {
   def translateJavaArrayElementType(using Context): Type =
     // A type parameter upper-bounded solely by `FromJavaObject` has `ObjectClass` as its classSymbol
     if self.typeSymbol.isAbstractOrParamType && (self.classSymbol eq defn.ObjectClass) then
-      AndType(self, defn.ObjectType)
+      // The order is important here since Java intersections erase to their first operand
+      AndType(defn.ObjectType, self)
     else
       self
 

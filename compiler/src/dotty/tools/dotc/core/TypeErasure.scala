@@ -238,6 +238,7 @@ object TypeErasure {
 
     if (defn.isPolymorphicAfterErasure(sym)) eraseParamBounds(sym.info.asInstanceOf[PolyType])
     else if (sym.isAbstractType) TypeAlias(WildcardType)
+    else if sym.is(ConstructorProxy) then NoType
     else if (sym.isConstructor) outer.addParam(sym.owner.asClass, erase(tp)(using preErasureCtx))
     else if (sym.is(Label)) erase.eraseResult(sym.info)(using preErasureCtx)
     else erase.eraseInfo(tp, sym)(using preErasureCtx) match {
@@ -426,10 +427,6 @@ object TypeErasure {
    *  This operation has the following the properties:
    *  - Associativity and commutativity, because this method acts as the minimum
    *    of the total order induced by `compareErasedGlb`.
-   *  - Java compatibility: intersections that would be valid in Java code are
-   *    erased like javac would erase them (a Java intersection is composed of
-   *    exactly one class and one or more interfaces and always erases to the
-   *    class).
    */
   def erasedGlb(tp1: Type, tp2: Type)(using Context): Type =
     if compareErasedGlb(tp1, tp2) <= 0 then tp1 else tp2
@@ -527,6 +524,15 @@ object TypeErasure {
     case tp: OrType  => hasStableErasure(tp.tp1) && hasStableErasure(tp.tp2)
     case _ => false
   }
+
+  /** The erasure of `PolyFunction { def apply: $applyInfo }` */
+  def erasePolyFunctionApply(applyInfo: Type)(using Context): Type =
+    assert(applyInfo.isInstanceOf[PolyType])
+    val res = applyInfo.resultType
+    val paramss = res.paramNamess
+    assert(paramss.length == 1)
+    erasure(defn.FunctionType(paramss.head.length,
+      isContextual = res.isImplicitMethod, isErased = res.isErasedMethod))
 }
 
 import TypeErasure._
@@ -584,7 +590,7 @@ class TypeErasure(sourceLanguage: SourceLanguage, semiEraseVCs: Boolean, isConst
       val sym = tp.symbol
       if (!sym.isClass) this(tp.translucentSuperType)
       else if (semiEraseVCs && isDerivedValueClass(sym)) eraseDerivedValueClass(tp)
-      else if (defn.isSyntheticFunctionClass(sym)) defn.erasedFunctionType(sym)
+      else if (defn.isSyntheticFunctionClass(sym)) defn.functionTypeErasure(sym)
       else eraseNormalClassRef(tp)
     case tp: AppliedType =>
       val tycon = tp.tycon
@@ -600,15 +606,13 @@ class TypeErasure(sourceLanguage: SourceLanguage, semiEraseVCs: Boolean, isConst
     case ExprType(rt) =>
       defn.FunctionType(0)
     case RefinedType(parent, nme.apply, refinedInfo) if parent.typeSymbol eq defn.PolyFunctionClass =>
-      assert(refinedInfo.isInstanceOf[PolyType])
-      val res = refinedInfo.resultType
-      val paramss = res.paramNamess
-      assert(paramss.length == 1)
-      this(defn.FunctionType(paramss.head.length, isContextual = res.isImplicitMethod, isErased = res.isErasedMethod))
+      erasePolyFunctionApply(refinedInfo)
     case tp: TypeProxy =>
       this(tp.underlying)
     case tp @ AndType(tp1, tp2) =>
-      if sourceLanguage.isScala2 then
+      if sourceLanguage.isJava then
+        this(tp1)
+      else if sourceLanguage.isScala2 then
         this(Scala2Erasure.intersectionDominator(Scala2Erasure.flattenedParents(tp)))
       else
         erasedGlb(this(tp1), this(tp2))
@@ -655,7 +659,14 @@ class TypeErasure(sourceLanguage: SourceLanguage, semiEraseVCs: Boolean, isConst
               tr1 :: trs1.filterNot(_.isAnyRef)
             case nil => nil
           }
-        val erasedDecls = decls.filteredScope(sym => !sym.isType || sym.isClass)
+        var erasedDecls = decls.filteredScope(sym => !sym.isType || sym.isClass).openForMutations
+        for dcl <- erasedDecls.iterator do
+          if dcl.lastKnownDenotation.unforcedAnnotation(defn.TargetNameAnnot).isDefined
+             && dcl.targetName != dcl.name
+          then
+            if erasedDecls eq decls then erasedDecls = erasedDecls.cloneScope
+            erasedDecls.unlink(dcl)
+            erasedDecls.enter(dcl.targetName, dcl)
         val selfType1 = if cls.is(Module) then cls.sourceModule.termRef else NoType
         tp.derivedClassInfo(NoPrefix, erasedParents, erasedDecls, selfType1)
           // can't replace selftype by NoType because this would lose the sourceModule link
@@ -698,7 +709,7 @@ class TypeErasure(sourceLanguage: SourceLanguage, semiEraseVCs: Boolean, isConst
             // See doc comment for ElimByName for speculation how we could improve this.
         else
           MethodType(Nil, Nil,
-            eraseResult(sym.info.finalResultType.translateFromRepeated(toArray = sourceLanguage.isJava)))
+            eraseResult(rt.translateFromRepeated(toArray = sourceLanguage.isJava)))
       case tp1: PolyType =>
         eraseResult(tp1.resultType) match
           case rt: MethodType => rt
@@ -726,7 +737,7 @@ class TypeErasure(sourceLanguage: SourceLanguage, semiEraseVCs: Boolean, isConst
       //   erased like `Array[A]` as seen from its definition site, no matter
       //   the `X` (same if `A` is bounded).
       //
-      // The binary compatibility is checked by sbt-dotty/sbt-test/scala2-compat/i8001
+      // The binary compatibility is checked by sbt-test/scala2-compat/i8001
       val erasedValueClass =
         if erasedUnderlying.isPrimitiveValueType && !genericUnderlying.isPrimitiveValueType then
           defn.boxedType(erasedUnderlying)
@@ -785,7 +796,7 @@ class TypeErasure(sourceLanguage: SourceLanguage, semiEraseVCs: Boolean, isConst
           if (erasedVCRef.exists) return sigName(erasedVCRef)
         }
         if (defn.isSyntheticFunctionClass(sym))
-          sigName(defn.erasedFunctionType(sym))
+          sigName(defn.functionTypeErasure(sym))
         else
           val cls = normalizeClass(sym.asClass)
           val fullName =
@@ -821,10 +832,10 @@ class TypeErasure(sourceLanguage: SourceLanguage, semiEraseVCs: Boolean, isConst
         sigName(this(tp))
       case tp: TypeProxy =>
         sigName(tp.underlying)
-      case _: ErrorType | WildcardType | NoType =>
-        tpnme.WILDCARD
       case tp: WildcardType =>
-        sigName(tp.optBounds)
+        tpnme.Uninstantiated
+      case _: ErrorType | NoType =>
+        tpnme.ERROR
       case _ =>
         val erasedTp = this(tp)
         assert(erasedTp ne tp, tp)

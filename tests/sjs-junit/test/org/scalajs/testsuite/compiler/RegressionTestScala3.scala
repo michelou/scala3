@@ -27,6 +27,38 @@ class RegressionTestScala3 {
     assertEquals("foo", new RangeErrorIssue11592("foo").message)
     assertEquals("", new RangeErrorIssue11592().message)
   }
+
+  @Test def testNonJVMCharsInClosureParametersIssue12507(): Unit = {
+    def foo(`[-3, 3]`: Int): Int => Int = { x =>
+      `[-3, 3]`
+    }
+
+    assertEquals(5, foo(5)(4))
+  }
+
+  @Test def defaultAccessorBridgesIssue12572(): Unit = {
+    new MyPromiseIssue12572[Int](5)
+  }
+
+  @Test def desugarIdentCrashIssue13221(): Unit = {
+    assertEquals(1, X_Issue13221.I.i)
+    assertEquals(1, X_Issue13221.blah)
+  }
+
+  @Test def primitivePlusStringThatIsATermRefIssue13518(): Unit = {
+    def charPlusString(x: String): String = 'a' + x
+    assertEquals("abc", charPlusString("bc"))
+
+    def intPlusString(x: String): String = 5 + x
+    assertEquals("5bc", intPlusString("bc"))
+  }
+
+  @Test def defaultParamsInModuleDefWithBridgesIssue13860(): Unit = {
+    import Issue13860._
+
+    assertEquals(0L, Foo.bar().x)
+    assertEquals(5L, Foo.bar(5L).x)
+  }
 }
 
 object RegressionTestScala3 {
@@ -44,6 +76,48 @@ object RegressionTestScala3 {
   @JSGlobal("RangeError")
   class RangeErrorIssue11592(msg: String = js.native) extends js.Object {
     val message: String = js.native
+  }
+
+  class MyPromiseIssue12572[T](t: T) extends js.Promise[T]((resolve, reject) => resolve(t)) {
+    override def `then`[S](
+        onFulfilled: js.Function1[T, S | js.Thenable[S]],
+        onRejected: js.UndefOr[js.Function1[scala.Any, S | js.Thenable[S]]] = js.undefined): js.Promise[S] = {
+      ???
+    }
+
+    override def `then`[S >: T](
+        onFulfilled: Unit,
+        onRejected: js.UndefOr[js.Function1[scala.Any, S | js.Thenable[S]]]): js.Promise[S] = {
+      ???
+    }
+
+    override def `catch`[S >: T](
+        onRejected: js.UndefOr[js.Function1[scala.Any, S | js.Thenable[S]]] = js.undefined): js.Promise[S] = {
+      ???
+    }
+  }
+
+  object X_Issue13221 extends Y_Issue13221 {
+    object I {
+      def i = 1
+    }
+  }
+
+  abstract class Y_Issue13221 { self: X_Issue13221.type =>
+    import I._
+    def blah = i
+  }
+
+  object Issue13860 {
+    class Foo(var x: Long)
+
+    trait Companion[A] {
+      def bar(x: Long = 0): A
+    }
+
+    object Foo extends Companion[Foo] {
+      def bar(x: Long = 0): Foo = new Foo(x)
+    }
   }
 }
 

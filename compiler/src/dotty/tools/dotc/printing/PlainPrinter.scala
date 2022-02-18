@@ -12,7 +12,6 @@ import typer.Implicits._
 import typer.ImportInfo
 import Variances.varianceSign
 import util.SourcePosition
-import java.lang.Integer.toOctalString
 import scala.util.control.NonFatal
 import scala.annotation.switch
 
@@ -30,6 +29,7 @@ class PlainPrinter(_ctx: Context) extends Printer {
   protected def maxToTextRecursions: Int = 100
 
   protected def showUniqueIds = ctx.settings.uniqid.value || Printer.debugPrintUnique
+  protected def showNestingLevel = ctx.settings.YprintLevel.value
 
   protected final def limiter: MessageLimiter = ctx.property(MessageLimiter).get
 
@@ -66,6 +66,8 @@ class PlainPrinter(_ctx: Context) extends Printer {
         case tp @ AppliedType(tycon, args) =>
           if (defn.isCompiletimeAppliedType(tycon.typeSymbol)) tp.tryCompiletimeConstantFold
           else tycon.dealias.appliedTo(args)
+        case tp: NamedType =>
+          tp.reduceProjection
         case _ =>
           tp
       }
@@ -156,7 +158,12 @@ class PlainPrinter(_ctx: Context) extends Printer {
       case tp: TermParamRef =>
         ParamRefNameString(tp) ~ lambdaHash(tp.binder) ~ ".type"
       case tp: TypeParamRef =>
-        ParamRefNameString(tp) ~ lambdaHash(tp.binder)
+        val suffix =
+          if showNestingLevel then
+            val tvar = ctx.typerState.constraint.typeVarOfParam(tp)
+            if tvar.exists then s"#${tvar.asInstanceOf[TypeVar].nestingLevel.toString}" else ""
+          else ""
+        ParamRefNameString(tp) ~ lambdaHash(tp.binder) ~ suffix
       case tp: SingletonType =>
         toTextSingleton(tp)
       case AppliedType(tycon, args) =>
@@ -178,13 +185,14 @@ class PlainPrinter(_ctx: Context) extends Printer {
       case MatchType(bound, scrutinee, cases) =>
         changePrec(GlobalPrec) {
           def caseText(tp: Type): Text = tp match {
+            case tp: HKTypeLambda => caseText(tp.resultType)
             case defn.MatchCase(pat, body) => "case " ~ toText(pat) ~ " => " ~ toText(body)
             case _ => "case " ~ toText(tp)
           }
           def casesText = Text(cases.map(caseText), "\n")
-            atPrec(InfixPrec) { toText(scrutinee) } ~
-            keywordStr(" match ") ~ "{" ~ casesText ~ "}" ~
-            (" <: " ~ toText(bound) provided !bound.isAny)
+          atPrec(InfixPrec) { toText(scrutinee) } ~
+          keywordStr(" match ") ~ "{" ~ casesText ~ "}" ~
+          (" <: " ~ toText(bound) provided !bound.isAny)
         }.close
       case tp: PreviousErrorType if ctx.settings.XprintTypes.value =>
         "<error>" // do not print previously reported error message because they may try to print this error type again recuresevely
@@ -219,7 +227,7 @@ class PlainPrinter(_ctx: Context) extends Printer {
           toTextGlobal(tp.resultType)
         }
       case AnnotatedType(tpe, annot) =>
-        if annot.symbol == defn.InlineParamAnnot then toText(tpe)
+        if annot.symbol == defn.InlineParamAnnot || annot.symbol == defn.ErasedParamAnnot then toText(tpe)
         else toTextLocal(tpe) ~ " " ~ toText(annot)
       case tp: TypeVar =>
         if (tp.isInstantiated)
@@ -252,11 +260,11 @@ class PlainPrinter(_ctx: Context) extends Printer {
 
   protected def paramsText(lam: LambdaType): Text = {
     def paramText(name: Name, tp: Type) =
-      toText(name) ~ lambdaHash(lam) ~ toTextRHS(tp)
+      toText(name) ~ lambdaHash(lam) ~ toTextRHS(tp, isParameter = true)
     Text(lam.paramNames.lazyZip(lam.paramInfos).map(paramText), ", ")
   }
 
-  protected def ParamRefNameString(name: Name): String = name.toString
+  protected def ParamRefNameString(name: Name): String = nameString(name)
 
   protected def ParamRefNameString(param: ParamRef): String =
     ParamRefNameString(param.binder.paramNames(param.paramNum))
@@ -271,9 +279,13 @@ class PlainPrinter(_ctx: Context) extends Printer {
       catch { case ex: NullPointerException => "" }
     else ""
 
-  /** If -uniqid is set, the unique id of symbol, after a # */
+  /** A string to append to a symbol composed of:
+   *  - if -uniqid is set, its unique id after a #.
+   *  - if -Yprint-level, its nesting level after a %.
+   */
   protected def idString(sym: Symbol): String =
-    if (showUniqueIds || Printer.debugPrintUnique) "#" + sym.id else ""
+    (if (showUniqueIds || Printer.debugPrintUnique) "#" + sym.id else "") +
+    (if (showNestingLevel) "%" + sym.nestingLevel else "")
 
   def nameString(sym: Symbol): String =
     simpleNameString(sym) + idString(sym) // + "<" + (if (sym.exists) sym.owner else "") + ">"
@@ -348,15 +360,17 @@ class PlainPrinter(_ctx: Context) extends Printer {
     case None => "?"
   }
 
-  protected def decomposeLambdas(bounds: TypeBounds): (String, TypeBounds) =
-    def decompose(tp: Type) = tp.stripTypeVar match
+  protected def decomposeLambdas(bounds: TypeBounds): (Text, TypeBounds) =
+    def decompose(tp: Type): (Text, Type) = tp.stripTypeVar match
       case lam: HKTypeLambda =>
         val names =
           if lam.isDeclaredVarianceLambda then
             lam.paramNames.lazyZip(lam.declaredVariances).map((name, v) =>
               varianceSign(v) + name)
-          else lam.paramNames
-        (names.mkString("[", ", ", "]"), lam.resType)
+          else lam.paramNames.map(_.toString)
+        val infos = lam.paramInfos.map(toText)
+        val tparams = names.zip(infos).map(_ ~ _)
+        ("[" ~ Text(tparams, ",") ~ "]", lam.resType)
       case _ =>
         ("", tp)
     bounds match
@@ -370,7 +384,7 @@ class PlainPrinter(_ctx: Context) extends Printer {
   end decomposeLambdas
 
   /** String representation of a definition's type following its name */
-  protected def toTextRHS(tp: Type): Text = controlled {
+  protected def toTextRHS(tp: Type, isParameter: Boolean = false): Text = controlled {
     homogenize(tp) match {
       case tp: TypeBounds =>
         val (tparamStr, rhs) = decomposeLambdas(tp)
@@ -400,7 +414,12 @@ class PlainPrinter(_ctx: Context) extends Printer {
       case mt: MethodType =>
         toTextGlobal(mt)
       case tp: ExprType =>
-        ": => " ~ toTextGlobal(tp.widenExpr)
+        // parameterless methods require special treatment, see #11201
+        (if (isParameter) ": => " else ": ") ~ toTextGlobal(tp.widenExpr)
+      case tp: PolyType =>
+        "[" ~ paramsText(tp) ~ "]"
+        ~ (Str(": ") provided !tp.resultType.isInstanceOf[MethodType])
+        ~ toTextGlobal(tp.resultType)
       case tp =>
         ": " ~ toTextGlobal(tp)
     }
@@ -523,7 +542,7 @@ class PlainPrinter(_ctx: Context) extends Printer {
     case '"' => "\\\""
     case '\'' => "\\\'"
     case '\\' => "\\\\"
-    case _ => if (ch.isControl) "\\0" + toOctalString(ch) else String.valueOf(ch)
+    case _ => if ch.isControl then f"${"\\"}u${ch.toInt}%04x" else String.valueOf(ch)
   }
 
   def toText(const: Constant): Text = const.tag match {
@@ -536,7 +555,16 @@ class PlainPrinter(_ctx: Context) extends Printer {
     case _ => literalText(String.valueOf(const.value))
   }
 
-  def toText(annot: Annotation): Text = s"@${annot.symbol.name}" // for now
+  /** Usual target for `Annotation#toText`, overridden in RefinedPrinter */
+  def annotText(annot: Annotation): Text = s"@${annot.symbol.name}"
+
+  def toText(annot: Annotation): Text = annot.toText(this)
+
+  def toText(param: LambdaParam): Text =
+    varianceSign(param.paramVariance)
+    ~ toText(param.paramName)
+    ~ (if param.isTypeParam then "" else ": ")
+    ~ toText(param.paramInfo)
 
   protected def escapedString(str: String): String = str flatMap escapedChar
 
@@ -561,7 +589,7 @@ class PlainPrinter(_ctx: Context) extends Printer {
         Text()
 
     nodeName ~ "(" ~ elems ~ tpSuffix ~ ")" ~ (Str(tree.sourcePos.toString) provided printDebug)
-  }.close // todo: override in refined printer
+  }.close
 
   def toText(pos: SourcePosition): Text =
     if (!pos.exists) "<no position>"
@@ -590,6 +618,47 @@ class PlainPrinter(_ctx: Context) extends Printer {
         if sel.isGiven then "given" else sel.name.show
       case _ => "{...}"
     s"import $exprStr.$selectorStr"
+
+  def toText(c: OrderingConstraint): Text =
+    val savedConstraint = ctx.typerState.constraint
+    try
+      // The current TyperState constraint determines how type variables are printed
+      ctx.typerState.constraint = c
+      def entryText(tp: Type) = tp match {
+        case tp: TypeBounds =>
+          toText(tp)
+        case _ =>
+          " := " ~ toText(tp)
+      }
+      val indent = 3
+      val uninstVarsText = " uninstantiated variables: " ~
+        Text(c.uninstVars.map(toText), ", ")
+      val constrainedText =
+        " constrained types: " ~ Text(c.domainLambdas.map(toText), ", ")
+      val boundsText =
+        " bounds: " ~ {
+          val assocs =
+            for (param <- c.domainParams)
+            yield (" " * indent) ~ toText(param) ~ entryText(c.entry(param))
+          Text(assocs, "\n")
+        }
+      val orderingText =
+        " ordering: " ~ {
+          val deps =
+            for {
+              param <- c.domainParams
+              ups = c.minUpper(param)
+              if ups.nonEmpty
+            }
+            yield
+              (" " * indent) ~ toText(param) ~ " <: " ~
+                Text(ups.map(toText), ", ")
+          Text(deps, "\n")
+        }
+      //Printer.debugPrintUnique = false
+      Text.lines(List(uninstVarsText, constrainedText, boundsText, orderingText))
+    finally
+      ctx.typerState.constraint = savedConstraint
 
   def plain: PlainPrinter = this
 

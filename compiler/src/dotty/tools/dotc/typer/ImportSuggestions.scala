@@ -167,12 +167,15 @@ trait ImportSuggestions:
       allCandidates.map(_.implicitRef.underlyingRef.symbol).toSet
     }
 
+    def testContext(): Context =
+      ctx.fresh.retractMode(Mode.ImplicitsEnabled).setExploreTyperState()
+
     /** Test whether the head of a given instance matches the expected type `pt`,
      *  ignoring any dependent implicit arguments.
      */
     def shallowTest(ref: TermRef): Boolean =
       System.currentTimeMillis < deadLine
-      && inContext(ctx.fresh.setExploreTyperState()) {
+      && inContext(testContext()) {
         def test(pt: Type): Boolean = pt match
           case ViewProto(argType, OrType(rt1, rt2)) =>
             // Union types do not constrain results, since comparison with a union
@@ -209,7 +212,7 @@ trait ImportSuggestions:
         try
           timer.schedule(task, testOneImplicitTimeOut)
           typedImplicit(candidate, expectedType, argument, span)(
-            using ctx.fresh.setExploreTyperState()).isSuccess
+            using testContext()).isSuccess
         finally
           if task.cancel() then // timer task has not run yet
             assert(!ctx.run.isCancelled)
@@ -270,11 +273,14 @@ trait ImportSuggestions:
   /** The `ref` parts of this list of pairs, discarding subsequent elements that
    *  have the same String part. Elements are sorted by their String parts.
    */
-  extension (refs: List[(TermRef, String)]) def distinctRefs(using Context): List[TermRef] = refs match
-    case (ref, str) :: refs1 =>
-      ref :: refs1.dropWhile(_._2 == str).distinctRefs
-    case Nil =>
-      Nil
+  extension (refs: List[(TermRef, String)]) def distinctRefs(using Context): List[TermRef] =
+    val buf = new mutable.ListBuffer[TermRef]
+    var last = ""
+    for (ref, str) <- refs do
+      if last != str then
+        buf += ref
+        last = str
+    buf.toList
 
   /** The best `n` references in `refs`, according to `compare`
    *  `compare` is a partial order. If there's a tie, we take elements

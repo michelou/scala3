@@ -14,6 +14,7 @@ import dotty.tools.dotc.core.Names._
 import dotty.tools.dotc.core.Phases._
 import dotty.tools.dotc.core.StdNames._
 import dotty.tools.dotc.core.Symbols._
+import dotty.tools.dotc.core.Denotations.StaleSymbol
 import dotty.tools.dotc.core.Types._
 import dotty.tools.dotc.transform.SymUtils._
 import dotty.tools.dotc.util.{SrcPos, NoSourcePosition}
@@ -48,7 +49,9 @@ import scala.collection.{Set, mutable}
 class ExtractDependencies extends Phase {
   import ExtractDependencies._
 
-  override def phaseName: String = "sbt-deps"
+  override def phaseName: String = ExtractDependencies.name
+
+  override def description: String = ExtractDependencies.description
 
   override def isRunnable(using Context): Boolean = {
     def forceRun = ctx.settings.YdumpSbtInc.value || ctx.settings.YforceSbtPhases.value
@@ -179,6 +182,9 @@ class ExtractDependencies extends Phase {
 }
 
 object ExtractDependencies {
+  val name: String = "sbt-deps"
+  val description: String = "sends information on classes' dependencies to sbt"
+
   def classNameAsString(sym: Symbol)(using Context): String =
     sym.fullName.stripModuleClassSuffix.toString
 
@@ -310,14 +316,6 @@ private class ExtractDependenciesCollector extends tpd.TreeTraverser { thisTreeT
     }
   }
 
-  /** Mangle a JVM symbol name in a format better suited for internal uses by sbt. */
-  private def mangledName(sym: Symbol)(using Context): Name = {
-    def constructorName = sym.owner.fullName ++ ";init;"
-
-    if (sym.isConstructor) constructorName
-    else sym.name.stripModuleClassSuffix
-  }
-
   private def addMemberRefDependency(sym: Symbol)(using Context): Unit =
     if (!ignoreDependency(sym)) {
       val enclOrModuleClass = if (sym.is(ModuleVal)) sym.moduleClass else sym.enclosingClass
@@ -327,7 +325,7 @@ private class ExtractDependenciesCollector extends tpd.TreeTraverser { thisTreeT
       if (fromClass.exists) { // can happen when visiting imports
         assert(fromClass.isClass)
 
-        addUsedName(fromClass, mangledName(sym), UseScope.Default)
+        addUsedName(fromClass, sym.zincMangledName, UseScope.Default)
         // packages have class symbol. Only record them as used names but not dependency
         if (!sym.is(Package)) {
           _dependencies += ClassDependency(fromClass, enclOrModuleClass, DependencyByMemberRef)
@@ -348,12 +346,17 @@ private class ExtractDependenciesCollector extends tpd.TreeTraverser { thisTreeT
     else DependencyByInheritance
 
   private def ignoreDependency(sym: Symbol)(using Context) =
-    !sym.exists ||
-    sym.isAbsent(canForce = false) || // ignore dependencies that have a symbol but do not exist.
-                                      // e.g. java.lang.Object companion object
-    sym.isEffectiveRoot ||
-    sym.isAnonymousFunction ||
-    sym.isAnonymousClass
+    try
+      !sym.exists ||
+      sym.isAbsent(canForce = false) || // ignore dependencies that have a symbol but do not exist.
+                                        // e.g. java.lang.Object companion object
+      sym.isEffectiveRoot ||
+      sym.isAnonymousFunction ||
+      sym.isAnonymousClass
+    catch case ex: StaleSymbol =>
+      // can happen for constructor proxies. Test case is pos-macros/i13532.
+      true
+
 
   /** Traverse the tree of a source file and record the dependencies and used names which
    *  can be retrieved using `dependencies` and`usedNames`.
@@ -455,18 +458,20 @@ private class ExtractDependenciesCollector extends tpd.TreeTraverser { thisTreeT
   private abstract class TypeDependencyTraverser(using Context) extends TypeTraverser() {
     protected def addDependency(symbol: Symbol): Unit
 
-    val seen = new mutable.HashSet[Type]
+    // Avoid cycles by remembering both the types (testcase:
+    // tests/run/enum-values.scala) and the symbols of named types (testcase:
+    // tests/pos-java-interop/i13575) we've seen before.
+    val seen = new mutable.HashSet[Symbol | Type]
     def traverse(tp: Type): Unit = if (!seen.contains(tp)) {
       seen += tp
       tp match {
         case tp: NamedType =>
           val sym = tp.symbol
-          if (!sym.is(Package)) {
+          if !seen.contains(sym) && !sym.is(Package) then
+            seen += sym
             addDependency(sym)
-            if (!sym.isClass)
-              traverse(tp.info)
+            if !sym.isClass then traverse(tp.info)
             traverse(tp.prefix)
-          }
         case tp: ThisType =>
           traverse(tp.underlying)
         case tp: ConstantType =>
@@ -490,7 +495,7 @@ private class ExtractDependenciesCollector extends tpd.TreeTraverser { thisTreeT
     val traverser = new TypeDependencyTraverser {
       def addDependency(symbol: Symbol) =
         if (!ignoreDependency(symbol) && symbol.is(Sealed)) {
-          val usedName = mangledName(symbol)
+          val usedName = symbol.zincMangledName
           addUsedName(usedName, UseScope.PatMatTarget)
         }
     }

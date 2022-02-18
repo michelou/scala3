@@ -13,6 +13,18 @@ import NameKinds.SuperAccessorName
 
 object ElimErasedValueType {
   val name: String = "elimErasedValueType"
+  val description: String = "expand erased value types to their underlying implmementation types"
+
+  def elimEVT(tp: Type)(using Context): Type = tp match {
+    case ErasedValueType(_, underlying) =>
+      elimEVT(underlying)
+    case tp: MethodType =>
+      val paramTypes = tp.paramInfos.mapConserve(elimEVT)
+      val retType = elimEVT(tp.resultType)
+      tp.derivedLambdaType(tp.paramNames, paramTypes, retType)
+    case _ =>
+      tp
+  }
 }
 
 /** This phase erases ErasedValueType to their underlying type.
@@ -25,8 +37,11 @@ object ElimErasedValueType {
 class ElimErasedValueType extends MiniPhase with InfoTransformer { thisPhase =>
 
   import tpd._
+  import ElimErasedValueType.elimEVT
 
   override def phaseName: String = ElimErasedValueType.name
+
+  override def description: String = ElimErasedValueType.description
 
   override def runsAfter: Set[String] = Set(Erasure.name)
 
@@ -46,17 +61,6 @@ class ElimErasedValueType extends MiniPhase with InfoTransformer { thisPhase =>
       }
     case _ =>
       elimEVT(tp)
-  }
-
-  def elimEVT(tp: Type)(using Context): Type = tp match {
-    case ErasedValueType(_, underlying) =>
-      elimEVT(underlying)
-    case tp: MethodType =>
-      val paramTypes = tp.paramInfos.mapConserve(elimEVT)
-      val retType = elimEVT(tp.resultType)
-      tp.derivedLambdaType(tp.paramNames, paramTypes, retType)
-    case _ =>
-      tp
   }
 
   def transformTypeOfTree(tree: Tree)(using Context): Tree =
@@ -116,7 +120,7 @@ class ElimErasedValueType extends MiniPhase with InfoTransformer { thisPhase =>
       // Do the test at the earliest phase where both symbols existed.
       val phaseId =
         sym1.originDenotation.validFor.firstPhaseId max sym2.originDenotation.validFor.firstPhaseId
-      atPhase(elimRepeatedPhase.next)(checkNoConflict(sym1, sym2, sym1.info))
+      atPhase(elimByNamePhase.next)(checkNoConflict(sym1, sym2, sym1.info))
       opc.next()
     }
   }

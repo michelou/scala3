@@ -11,7 +11,6 @@ import dotty.tools.dotc.core.NameKinds
 import dotty.tools.dotc.core.Mode
 import dotty.tools.dotc.core.Symbols._
 import dotty.tools.dotc.core.Types._
-import dotty.tools.dotc.core.tasty.TreePickler.Hole
 import dotty.tools.dotc.core.tasty.{ PositionPickler, TastyPickler, TastyPrinter }
 import dotty.tools.dotc.core.tasty.DottyUnpickler
 import dotty.tools.dotc.core.tasty.TreeUnpickler.UnpickleMode
@@ -92,11 +91,6 @@ object PickledQuotes {
               val quotedType = typeHole(idx, reifiedArgs)
               PickledQuotes.quotedTypeToTree(quotedType)
           }
-        case tree: Select =>
-          // Retain selected members
-          val qual = transform(tree.qualifier)
-          qual.select(tree.symbol).withSpan(tree.span)
-
         case tree =>
           if tree.isDef then
             tree.symbol.annotations = tree.symbol.annotations.map {
@@ -175,31 +169,44 @@ object PickledQuotes {
       positionWarnings.foreach(report.warning(_))
 
     val pickled = pickler.assembleParts()
-    quotePickling.println(s"**** pickled quote\n${TastyPrinter.show(pickled)}")
+    quotePickling.println(s"**** pickled quote\n${TastyPrinter.showContents(pickled, ctx.settings.color.value == "never")}")
     pickled
   }
 
   /** Unpickle TASTY bytes into it's tree */
   private def unpickle(pickled: String | List[String], isType: Boolean)(using Context): Tree = {
-    val bytes = pickled match
-      case pickled: String => TastyString.unpickle(pickled)
-      case pickled: List[String] => TastyString.unpickle(pickled)
+    QuotesCache.getTree(pickled) match
+      case Some(tree) =>
+        quotePickling.println(s"**** Using cached quote for TASTY\n$tree")
+        treeOwner(tree) match
+          case Some(owner) =>
+            // Copy the cached tree to make sure the all definitions are unique.
+            TreeTypeMap(oldOwners = List(owner), newOwners = List(owner)).apply(tree)
+          case _ =>
+            tree
 
-    quotePickling.println(s"**** unpickling quote from TASTY\n${TastyPrinter.show(bytes)}")
+      case _ =>
+        val bytes = pickled match
+          case pickled: String => TastyString.unpickle(pickled)
+          case pickled: List[String] => TastyString.unpickle(pickled)
 
-    val mode = if (isType) UnpickleMode.TypeTree else UnpickleMode.Term
-    val unpickler = new DottyUnpickler(bytes, mode)
-    unpickler.enter(Set.empty)
+        quotePickling.println(s"**** unpickling quote from TASTY\n${TastyPrinter.showContents(bytes, ctx.settings.color.value == "never")}")
 
-    val tree = unpickler.tree
+        val mode = if (isType) UnpickleMode.TypeTree else UnpickleMode.Term
+        val unpickler = new DottyUnpickler(bytes, ctx.tastyVersion, mode)
+        unpickler.enter(Set.empty)
 
-    // Make sure trees and positions are fully loaded
-    new TreeTraverser {
-      def traverse(tree: Tree)(using Context): Unit = traverseChildren(tree)
-    }.traverse(tree)
+        val tree = unpickler.tree
+        QuotesCache(pickled) = tree
 
-    quotePickling.println(i"**** unpickled quote\n$tree")
-    tree
+        // Make sure trees and positions are fully loaded
+        new TreeTraverser {
+          def traverse(tree: Tree)(using Context): Unit = traverseChildren(tree)
+        }.traverse(tree)
+
+        quotePickling.println(i"**** unpickled quote\n$tree")
+
+        tree
   }
 
 }

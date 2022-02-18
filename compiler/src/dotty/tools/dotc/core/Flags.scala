@@ -233,7 +233,7 @@ object Flags {
   val (Param @ _, TermParam @ _, TypeParam @ _) = newFlags(8, "<param>")
 
   /** Labeled with `implicit` modifier (implicit value) */
-  val (Implicit @ _, ImplicitTerm @ _, _) = newFlags(9, "implicit")
+  val (Implicit @ _, ImplicitVal @ _, _) = newFlags(9, "implicit")
 
   /** Labeled with `lazy` (a lazy val) / a trait */
   val (LazyOrTrait @ _, Lazy @ _, Trait @ _) = newFlags(10, "lazy", "<trait>")
@@ -321,7 +321,7 @@ object Flags {
   val (Extension @ _, ExtensionMethod @ _, _) = newFlags(28, "<extension>")
 
   /** An inferable (`given`) parameter */
-  val (Given @ _, _, _) = newFlags(29, "given")
+  val (Given @ _, GivenVal @ _,  _) = newFlags(29, "given")
 
   /** Symbol is defined by a Java class */
   val (JavaDefined @ _, JavaDefinedVal @ _, _) = newFlags(30, "<java>")
@@ -465,7 +465,7 @@ object Flags {
     Module, Package, Deferred, Method, Case, Enum, Param, ParamAccessor,
     Scala2SpecialFlags, MutableOrOpen, Opaque, Touched, JavaStatic,
     OuterOrCovariant, LabelOrContravariant, CaseAccessor,
-    Extension, NonMember, Implicit, Given, Permanent, Synthetic,
+    Extension, NonMember, Implicit, Given, Permanent, Synthetic, Exported,
     SuperParamAliasOrScala2x, Inline, Macro, ConstructorProxy, Invisible)
 
   /** Flags that are not (re)set when completing the denotation, or, if symbol is
@@ -531,7 +531,7 @@ object Flags {
   val RetainedModuleClassFlags: FlagSet = RetainedModuleValAndClassFlags | Enum
 
   /** Flags retained in export forwarders */
-  val RetainedExportFlags = Given | Implicit | Inline
+  val RetainedExportFlags = Given | Implicit | Inline | Transparent
 
   /** Flags that apply only to classes */
   val ClassOnlyFlags = Sealed | Open | Abstract.toTypeFlags
@@ -568,6 +568,7 @@ object Flags {
   val FinalOrSealed: FlagSet                 = Final | Sealed
   val GivenOrImplicit: FlagSet               = Given | Implicit
   val GivenOrImplicitVal: FlagSet            = GivenOrImplicit.toTermFlags
+  val GivenMethod: FlagSet                   = Given | Method
   val InlineOrProxy: FlagSet                 = Inline | InlineProxy                           // An inline method or inline argument proxy */
   val InlineMethod: FlagSet                  = Inline | Method
   val InlineParam: FlagSet                   = Inline | Param
@@ -600,7 +601,6 @@ object Flags {
   val Scala2Trait: FlagSet                   = Scala2x | Trait
   val SyntheticArtifact: FlagSet             = Synthetic | Artifact
   val SyntheticCase: FlagSet                 = Synthetic | Case
-  val SyntheticGivenMethod: FlagSet          = Synthetic | Given | Method
   val SyntheticModule: FlagSet               = Synthetic | Module
   val SyntheticOpaque: FlagSet               = Synthetic | Opaque
   val SyntheticParam: FlagSet                = Synthetic | Param

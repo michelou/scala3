@@ -9,22 +9,19 @@ import collection.immutable.ArraySeq
 import java.nio.file.Files
 
 import dotty.tools.dotc.config.Settings._
-import dotty.tools.dotc.config.CommonScalaSettings
+import dotty.tools.dotc.config.AllScalaSettings
 import dotty.tools.scaladoc.Scaladoc._
 import dotty.tools.dotc.config.Settings.Setting.value
 import dotty.tools.dotc.config.Properties._
 import dotty.tools.dotc.config.CliCommand
 import dotty.tools.dotc.core.Contexts._
 
-class ScaladocSettings extends SettingGroup with CommonScalaSettings:
+class ScaladocSettings extends SettingGroup with AllScalaSettings:
   val unsupportedSettings = Seq(
-    // Options that we like to support
-    bootclasspath, extdirs, javabootclasspath, encoding, usejavacp,
     // Needed for plugin architecture
-    plugin,disable,require, pluginsDir, pluginOptions,
-    // we need support for sourcepath and sourceroot
-    sourcepath, sourceroot
+    plugin, disable, require, pluginsDir, pluginOptions,
   )
+
 
   val projectName: Setting[String] =
     StringSetting("-project", "project title", "The name of the project.", "", aliases = List("-doc-title"))
@@ -33,12 +30,15 @@ class ScaladocSettings extends SettingGroup with CommonScalaSettings:
     StringSetting("-project-version", "project version", "The current version of your project.", "", aliases = List("-doc-version"))
 
   val projectLogo: Setting[String] =
-    StringSetting("-project-logo", "project logo filename", "The file that contains the project's logo (in /images).", "", aliases = List("-doc-logo"))
+    StringSetting("-project-logo", "project logo filename", "Path to the file that contains the project's logo. Provided path can be absolute or relative to the project root directory.", "", aliases = List("-doc-logo"))
 
   val projectFooter: Setting[String] = StringSetting("-project-footer", "project footer", "A footer on every Scaladoc page.", "", aliases = List("-doc-footer"))
 
   val sourceLinks: Setting[List[String]] =
     MultiStringSetting("-source-links", "sources", SourceLinks.usage)
+
+  val legacySourceLink: Setting[String] =
+    StringSetting("-doc-source-url", "sources", "Legacy option from Scala 2. Use -source-links instead.", "")
 
   val syntax: Setting[String] =
     StringSetting("-comment-syntax", "syntax", "Syntax of the comment used", "")
@@ -50,6 +50,9 @@ class ScaladocSettings extends SettingGroup with CommonScalaSettings:
     MultiStringSetting("-external-mappings", "external-mappings",
       "Mapping between regexes matching classpath entries and external documentation. " +
         "'regex::[scaladoc|scaladoc|javadoc]::path' syntax is used")
+
+  val legacyExternalDocumentationMappings: Setting[List[String]] =
+    MultiStringSetting("-doc-external-doc", "legacy-external-mappings", "Legacy option from Scala 2. Mapping betweeen path and external documentation. Use -external-mappings instead.")
 
   val socialLinks: Setting[List[String]] =
     MultiStringSetting("-social-links", "social-links",
@@ -92,5 +95,45 @@ class ScaladocSettings extends SettingGroup with CommonScalaSettings:
     "./docs"
   )
 
+  val noLinkWarnings: Setting[Boolean] = BooleanSetting(
+    "-no-link-warnings",
+    "Avoid warnings for ambiguous and incorrect links in members look up. Doesn't affect warnings for incorrect links of assets etc.",
+    false
+  )
+
+  val versionsDictionaryUrl: Setting[String] = StringSetting(
+    "-versions-dictionary-url",
+    "versions dictionary url",
+    "A URL pointing to a JSON document containing a dictionary `version label -> documentation location`. " +
+      "The JSON file has single property \"versions\" that holds dictionary of labels of specific docs and URL pointing to their index.html top-level file. " +
+      "Useful for libraries that maintain different versions of their documentation.",
+    ""
+  )
+
   val YdocumentSyntheticTypes: Setting[Boolean] =
-    BooleanSetting("-Ydocument-synthetic-types", "Documents intrinsic types e. g. Any, Nothing. Setting is useful only for stdlib", false)
+    BooleanSetting("-Ydocument-synthetic-types", "Attach pages with documentation of the intrinsic types e. g. Any, Nothing to the docs. Setting is useful only for stdlib.", false)
+
+  val snippetCompiler: Setting[List[String]] =
+    MultiStringSetting("-snippet-compiler", "snippet-compiler", snippets.SnippetCompilerArgs.usage)
+
+  val generateInkuire: Setting[Boolean] =
+    BooleanSetting("-Ygenerate-inkuire", "Generates InkuireDB and enables Hoogle-like searches", false)
+
+  val apiSubdirectory: Setting[Boolean] =
+    BooleanSetting("-Yapi-subdirectory", "Put the API documentation pages inside a directory `api/`", false)
+
+  val scastieConfiguration: Setting[String] =
+    StringSetting("-scastie-configuration", "Scastie configuration", "Additional configuration passed to Scastie in code snippets", "")
+
+  val defaultTemplate: Setting[String] =
+    StringSetting(
+      "-default-template",
+      "default template used by static site",
+      "The static site is generating empty files for indexes that haven't been provided explicitly in a sidebar/missing index.html in directory. " +
+        "User can specify what default template should be used for such indexes. It can be useful for providing generic templates that interpolate some common settings, like title, or can have some custom html embedded.",
+      ""
+    )
+
+
+  def scaladocSpecificSettings: Set[Setting[_]] =
+    Set(sourceLinks, legacySourceLink, syntax, revision, externalDocumentationMappings, socialLinks, skipById, skipByRegex, deprecatedSkipPackages, docRootContent, snippetCompiler, generateInkuire, scastieConfiguration)

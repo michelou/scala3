@@ -93,10 +93,11 @@ object SymDenotations {
         if (myFlags.is(Trait)) NoInitsInterface & bodyFlags // no parents are initialized from a trait
         else NoInits & bodyFlags & parentFlags)
 
-    private def isCurrent(fs: FlagSet) =
-      fs <= (
-        if (myInfo.isInstanceOf[SymbolLoader]) FromStartFlags
-        else AfterLoadFlags)
+    def isCurrent(fs: FlagSet)(using Context): Boolean =
+      def knownFlags(info: Type): FlagSet = info match
+        case _: SymbolLoader | _: ModuleCompleter => FromStartFlags
+        case _ => AfterLoadFlags
+      !myInfo.isInstanceOf[LazyType] || fs <= knownFlags(myInfo)
 
     final def relevantFlagsFor(fs: FlagSet)(using Context) =
       if (isCurrent(fs)) myFlags else flags
@@ -407,7 +408,7 @@ object SymDenotations {
      *  @param tparams The type parameters with which the right-hand side bounds should be abstracted
      *
      */
-    def opaqueToBounds(info: Type, rhs: tpd.Tree, tparams: List[TypeParamInfo])(using Context): Type =
+    def opaqueToBounds(info: Type, rhs: tpd.Tree, tparams: List[TypeSymbol])(using Context): Type =
 
       def setAlias(tp: Type) =
         def recur(self: Type): Unit = self match
@@ -432,8 +433,8 @@ object SymDenotations {
           TypeBounds.empty
 
       info match
-        case TypeAlias(alias) if isOpaqueAlias && owner.isClass =>
-          setAlias(alias)
+        case info: AliasingBounds if isOpaqueAlias && owner.isClass =>
+          setAlias(info.alias)
           HKTypeLambda.boundsFromParams(tparams, bounds(rhs))
         case _ =>
           info
@@ -573,7 +574,7 @@ object SymDenotations {
       case _ =>
         // Otherwise, no completion is necessary, see the preconditions of `markAbsent()`.
         (myInfo `eq` NoType)
-        || is(Invisible) && !ctx.isAfterTyper
+        || is(Invisible) && ctx.isTyper
         || is(ModuleVal, butNot = Package) && moduleClass.isAbsent(canForce)
     }
 
@@ -710,6 +711,19 @@ object SymDenotations {
            )
          }
       )
+
+    /** Do this symbol and `cls` represent a pair of a given or implicit method and
+     *  its associated class that were defined by a single definition?
+     *  This can mean one of two things:
+     *   - the method and class are defined in a structural given instance, or
+     *   - the class is an implicit class and the method is its implicit conversion.
+	 */
+    final def isCoDefinedGiven(cls: Symbol)(using Context): Boolean =
+      is(Method) && isOneOf(GivenOrImplicit)
+      && ( is(Synthetic)                 // previous scheme used in 3.0
+         || cls.isOneOf(GivenOrImplicit) // new scheme from 3.1
+         )
+      && name == cls.name.toTermName && owner == cls.owner
 
     /** Is this a denotation of a stable term (or an arbitrary type)?
       * Terms are stable if they are idempotent (as in TreeInfo.Idempotent): that is, they always return the same value,
@@ -916,7 +930,7 @@ object SymDenotations {
     def hasDefaultParams(using Context): Boolean =
       if ctx.erasedTypes then false
       else if is(HasDefaultParams) then true
-      else if is(NoDefaultParams) then false
+      else if is(NoDefaultParams) || !is(Method) then false
       else
         val result =
           rawParamss.nestedExists(_.is(HasDefault))
@@ -1096,6 +1110,11 @@ object SymDenotations {
       enclClass(symbol, false)
     }
 
+    /** Skips symbol that are not owned by a class */
+    def skipLocalOwners(using Context): Symbol =
+      if symbol.owner.isClass then symbol
+      else symbol.owner.skipLocalOwners
+
     /** A class that in source code would be lexically enclosing */
     final def lexicallyEnclosingClass(using Context): Symbol =
       if (!exists || isClass) symbol else owner.lexicallyEnclosingClass
@@ -1140,11 +1159,10 @@ object SymDenotations {
       else NoSymbol
 
     /** The closest enclosing extension method containing this definition,
-     *  provided the extension method appears in the same class.
+     *  including methods outside the current class.
      */
     final def enclosingExtensionMethod(using Context): Symbol =
       if this.is(ExtensionMethod) then symbol
-      else if this.isClass then NoSymbol
       else if this.exists then owner.enclosingExtensionMethod
       else NoSymbol
 
@@ -1180,11 +1198,13 @@ object SymDenotations {
      */
     final def companionModule(using Context): Symbol =
       if (is(Module)) sourceModule
+      else if registeredCompanion.isAbsent() then NoSymbol
       else registeredCompanion.sourceModule
 
     private def companionType(using Context): Symbol =
       if (is(Package)) NoSymbol
       else if (is(ModuleVal)) moduleClass.denot.companionType
+      else if registeredCompanion.isAbsent() then NoSymbol
       else registeredCompanion
 
     /** The class with the same (type-) name as this module or module class,
@@ -1457,14 +1477,6 @@ object SymDenotations {
       else if is(Contravariant) then Contravariant
       else EmptyFlags
 
-    /** The length of the owner chain of this symbol. 1 for _root_, 0 for NoSymbol */
-    def nestingLevel(using Context): Int =
-      @tailrec def recur(d: SymDenotation, n: Int): Int = d match
-        case NoDenotation => n
-        case d: ClassDenotation => d.nestingLevel + n // profit from the cache in ClassDenotation
-        case _ => recur(d.owner, n + 1)
-      recur(this, 0)
-
     /** The flags to be used for a type parameter owned by this symbol.
      *  Overridden by ClassDenotation.
      */
@@ -1591,10 +1603,10 @@ object SymDenotations {
         // children that are defined in the same file as their parents.
         def maybeChild(sym: Symbol) =
           (sym.isClass && !this.is(JavaDefined) || sym.originDenotation.is(EnumVal))
-          && !owner.is(Package)
+          && (!owner.is(Package)
              || sym.originDenotation.infoOrCompleter.match
                   case _: SymbolLoaders.SecondCompleter => sym.associatedFile == this.symbol.associatedFile
-                  case _ => false
+                  case _ => false)
 
         if owner.isClass then
           for c <- owner.info.decls.toList if maybeChild(c) do
@@ -1612,6 +1624,66 @@ object SymDenotations {
 
       annotations.collect { case Annotation.Child(child) => child }.reverse
     end children
+
+    /** Recursively assemble all children of this symbol, Preserves order of insertion.
+     */
+    final def sealedStrictDescendants(using Context): List[Symbol] =
+
+      @tailrec
+      def findLvlN(
+        explore: mutable.ArrayDeque[Symbol],
+        seen: util.HashSet[Symbol],
+        acc: mutable.ListBuffer[Symbol]
+      ): List[Symbol] =
+        if explore.isEmpty then
+          acc.toList
+        else
+          val sym      = explore.head
+          val explore1 = explore.dropInPlace(1)
+          val lvlN     = sym.children
+          val notSeen  = lvlN.filterConserve(!seen.contains(_))
+          if notSeen.isEmpty then
+            findLvlN(explore1, seen, acc)
+          else
+            findLvlN(explore1 ++= notSeen, {seen ++= notSeen; seen}, acc ++= notSeen)
+      end findLvlN
+
+      /** Scans through `explore` to see if there are recursive children.
+       *  If a symbol in `explore` has children that are not contained in
+       *  `lvl1`, fallback to `findLvlN`, or else return `lvl1`.
+       */
+      @tailrec
+      def findLvl2(
+        lvl1: List[Symbol], explore: List[Symbol], seenOrNull: util.HashSet[Symbol] | Null
+      ): List[Symbol] = explore match
+        case sym :: explore1 =>
+          val lvl2 = sym.children
+          if lvl2.isEmpty then // no children, scan rest of explore1
+            findLvl2(lvl1, explore1, seenOrNull)
+          else // check if we have seen the children before
+            val seen = // initialise the seen set if not already
+              if seenOrNull != null then seenOrNull
+              else util.HashSet.from(lvl1)
+            val notSeen = lvl2.filterConserve(!seen.contains(_))
+            if notSeen.isEmpty then // we found children, but we had already seen them, scan the rest of explore1
+              findLvl2(lvl1, explore1, seen)
+            else // found unseen recursive children, we should fallback to the loop
+              findLvlN(
+                explore = mutable.ArrayDeque.from(explore1).appendAll(notSeen),
+                seen = {seen ++= notSeen; seen},
+                acc = mutable.ListBuffer.from(lvl1).appendAll(notSeen)
+              )
+        case nil =>
+          lvl1
+      end findLvl2
+
+      val lvl1 = children
+      findLvl2(lvl1, lvl1, seenOrNull = null)
+    end sealedStrictDescendants
+
+    /** Same as `sealedStrictDescendants` but prepends this symbol as well.
+     */
+    final def sealedDescendants(using Context): List[Symbol] = this.symbol :: sealedStrictDescendants
   }
 
   /** The contents of a class definition during a period
@@ -1804,6 +1876,11 @@ object SymDenotations {
     def baseClasses(implicit onBehalf: BaseData, ctx: Context): List[ClassSymbol] =
       baseData._1
 
+    /** Like `baseClasses.length` but more efficient. */
+    def baseClassesLength(using BaseData, Context): Int =
+      // `+ 1` because the baseClassSet does not include the current class unlike baseClasses
+      baseClassSet.classIds.length + 1
+
     /** A bitset that contains the superId's of all base classes */
     private def baseClassSet(implicit onBehalf: BaseData, ctx: Context): BaseClassSet =
       baseData._2
@@ -1982,7 +2059,10 @@ object SymDenotations {
 
     override final def findMember(name: Name, pre: Type, required: FlagSet, excluded: FlagSet)(using Context): Denotation =
       val raw = if excluded.is(Private) then nonPrivateMembersNamed(name) else membersNamed(name)
-      raw.filterWithFlags(required, excluded).asSeenFrom(pre).toDenot(pre)
+      val pre1 = pre match
+        case pre: OrType => pre.widenUnion
+        case _ => pre
+      raw.filterWithFlags(required, excluded).asSeenFrom(pre1).toDenot(pre1)
 
     final def findMemberNoShadowingBasedOnFlags(name: Name, pre: Type,
         required: FlagSet = EmptyFlags, excluded: FlagSet = EmptyFlags)(using Context): Denotation =
@@ -2162,7 +2242,7 @@ object SymDenotations {
           if (keepOnly eq implicitFilter)
             if (this.is(Package)) Iterator.empty
               // implicits in package objects are added by the overriding `memberNames` in `PackageClassDenotation`
-            else info.decls.iterator.filter(_.isOneOf(GivenOrImplicit))
+            else info.decls.iterator.filter(_.isOneOf(GivenOrImplicitVal))
           else info.decls.iterator
         for (sym <- ownSyms) maybeAdd(sym.name)
         names
@@ -2235,12 +2315,6 @@ object SymDenotations {
 
     override def registeredCompanion_=(c: Symbol) =
       myCompanion = c
-
-    private var myNestingLevel = -1
-
-    override def nestingLevel(using Context) =
-      if myNestingLevel == -1 then myNestingLevel = owner.nestingLevel + 1
-      myNestingLevel
   }
 
   /** The denotation of a package class.
@@ -2479,7 +2553,7 @@ object SymDenotations {
     }
 
   private[SymDenotations] def stillValidInOwner(denot: SymDenotation)(using Context): Boolean = try
-    val owner = denot.owner.denot
+    val owner = denot.maybeOwner.denot
     stillValid(owner)
     && (
       !owner.isClass

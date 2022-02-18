@@ -42,15 +42,15 @@ class CompletionTest {
 
   @Test def completionFromSyntheticPackageObject: Unit = {
     code"class Foo { val foo: IArr${m1} }".withSource
-      .completion(m1, Set(("IArray", Field, "scala.IArray"),
-                          ("IArray", Module, "scala.IArray$package.IArray$")))
+      .completion(m1, Set(("IArray", Module, "IArray"),
+                          ("IArray", Field, "scala.IArray")))
   }
 
   @Test def completionFromJavaDefaults: Unit = {
     code"class Foo { val foo: Runn${m1} }".withSource
       .completion(m1, Set(
         ("Runnable", Class, "java.lang.Runnable"),
-        ("Runnable", Module, "Runnable$")
+        ("Runnable", Module, "Runnable")
       ))
   }
 
@@ -121,7 +121,7 @@ class CompletionTest {
     withSources(
       code"""object O { object MyObject }""",
       code"""import O.My${m1}"""
-    ).completion(m1, Set(("MyObject", Module, "O.MyObject$")))
+    ).completion(m1, Set(("MyObject", Module, "O.MyObject")))
   }
 
   @Test def importCompleteWithClassAndCompanion: Unit = {
@@ -132,7 +132,7 @@ class CompletionTest {
       code"""package pgk1
              import pkg0.F${m1}"""
     ).completion(m1, Set(("Foo", Class, "pkg0.Foo"),
-                         ("Foo", Module, "pkg0.Foo$")))
+                         ("Foo", Module, "pkg0.Foo")))
   }
 
   @Test def importCompleteIncludePackage: Unit = {
@@ -157,7 +157,7 @@ class CompletionTest {
     ).completion(m1, Set(("myVal", Field, "Int"),
                          ("myDef", Method, "=> Int"),
                          ("myVar", Variable, "Int"),
-                         ("myObject", Module, "MyObject.myObject$"),
+                         ("myObject", Module, "MyObject.myObject"),
                          ("myClass", Class, "MyObject.myClass"),
                          ("myTrait", Class, "MyObject.myTrait")))
   }
@@ -165,7 +165,7 @@ class CompletionTest {
   @Test def importJavaClass: Unit = {
     code"""import java.io.FileDesc${m1}""".withSource
       .completion(m1, Set(("FileDescriptor", Class, "java.io.FileDescriptor"),
-                          ("FileDescriptor", Module, "java.io.FileDescriptor$")))
+                          ("FileDescriptor", Module, "java.io.FileDescriptor")))
   }
 
   @Test def importJavaStaticMethod: Unit = {
@@ -190,13 +190,13 @@ class CompletionTest {
     code"""object O {
              val out = java.io.FileDesc${m1}
            }""".withSource
-      .completion(m1, Set(("FileDescriptor", Module, "java.io.FileDescriptor$")))
+      .completion(m1, Set(("FileDescriptor", Module, "java.io.FileDescriptor")))
   }
 
   @Test def importRename: Unit = {
     code"""import java.io.{FileDesc${m1} => Foo}""".withSource
       .completion(m1, Set(("FileDescriptor", Class, "java.io.FileDescriptor"),
-                          ("FileDescriptor", Module, "java.io.FileDescriptor$")))
+                          ("FileDescriptor", Module, "java.io.FileDescriptor")))
   }
 
   @Test def importGivenByType: Unit = {
@@ -257,14 +257,14 @@ class CompletionTest {
           |  object bat
           |  val bizz: ba${m1}
           |}""".withSource
-      .completion(m1, Set(("bar", Field, "Bar"), ("bat", Module, "Foo.bat$")))
+      .completion(m1, Set(("bar", Field, "Bar"), ("bat", Module, "Foo.bat")))
   }
 
   @Test def completionOnRenamedImport: Unit = {
     code"""import java.io.{FileDescriptor => AwesomeStuff}
            trait Foo { val x: Awesom$m1 }""".withSource
       .completion(m1, Set(("AwesomeStuff", Class, "java.io.FileDescriptor"),
-                          ("AwesomeStuff", Module, "java.io.FileDescriptor$")))
+                          ("AwesomeStuff", Module, "java.io.FileDescriptor")))
   }
 
   @Test def completionOnRenamedImport2: Unit = {
@@ -274,7 +274,7 @@ class CompletionTest {
              val x: MyImp$m1
            }""".withSource
       .completion(m1, Set(("MyImportedSymbol", Class, "java.io.FileDescriptor"),
-                          ("MyImportedSymbol", Module, "java.io.FileDescriptor$")))
+                          ("MyImportedSymbol", Module, "java.io.FileDescriptor")))
   }
 
   @Test def completionRenamedAndOriginalNames: Unit = {
@@ -284,9 +284,9 @@ class CompletionTest {
           |  val x: Hash$m1
           |}""".withSource
       .completion(m1, Set(("HashMap", Class, "java.util.HashMap"),
-                          ("HashMap", Module, "java.util.HashMap$"),
+                          ("HashMap", Module, "java.util.HashMap"),
                           ("HashMap2", Class, "java.util.HashMap"),
-                          ("HashMap2", Module, "java.util.HashMap$")))
+                          ("HashMap2", Module, "java.util.HashMap")))
   }
 
   @Test def completionRenamedThrice: Unit = {
@@ -297,11 +297,11 @@ class CompletionTest {
           |  val x: MyHash$m1
           |}""".withSource
       .completion(m1, Set(("MyHashMap", Class, "java.util.HashMap"),
-                          ("MyHashMap", Module, "java.util.HashMap$"),
+                          ("MyHashMap", Module, "java.util.HashMap"),
                           ("MyHashMap2", Class, "java.util.HashMap"),
-                          ("MyHashMap2", Module, "java.util.HashMap$"),
+                          ("MyHashMap2", Module, "java.util.HashMap"),
                           ("MyHashMap3", Class, "java.util.HashMap"),
-                          ("MyHashMap3", Module, "java.util.HashMap$")))
+                          ("MyHashMap3", Module, "java.util.HashMap")))
   }
 
   @Test def completeFromWildcardImports: Unit = {
@@ -372,7 +372,7 @@ class CompletionTest {
     code"""object Test {
           |  def x = Tes$m1
           |}""".withSource
-      .completion(m1, Set(("Test", Module, "Test$")))
+      .completion(m1, Set(("Test", Module, "Test")))
   }
 
   @Test def completeBothDefinitionsForEqualNestingLevels: Unit = {
@@ -402,6 +402,19 @@ class CompletionTest {
           |  val x = xx$m1
           |}""".withSource
       .completion(m1, Set())
+  }
+
+  @Test def completeFromSameImportsForEqualNestingLevels: Unit = {
+    code"""object Foo {
+          |  def xxxx(i: Int): Int = i
+          |}
+          |object Test {
+          |  import Foo.xxxx
+          |  import Foo.xxxx
+          |  import Foo.xxxx
+          |  val x = xx$m1
+          |}""".withSource
+      .completion(m1, Set(("xxxx", Method, "(i: Int): Int")))
   }
 
   @Test def preferLocalDefinitionToImportForEqualNestingLevels: Unit = {
@@ -524,9 +537,9 @@ class CompletionTest {
           |  val ZZZZ = YY$m1
           |  type ZZZZ = YY$m2
           |}""".withSource
-      .completion(m1, Set(("YYYY", Field, "Int$")))
+      .completion(m1, Set(("YYYY", Field, "Int")))
       .completion(m2, Set(("YYYY", Field, "XXXX.YYYY"),
-                          ("YYYY", Field, "Int$")))
+                          ("YYYY", Field, "Int")))
   }
 
   @Test def completeRespectingAccessModifiers: Unit = {
@@ -547,7 +560,8 @@ class CompletionTest {
   }
 
   @Test def completeFromPackageObjectWithInheritance: Unit = {
-    code"""trait Foo[A] { def xxxx(a: A) = a }
+    code"""package test
+          |trait Foo[A] { def xxxx(a: A) = a }
           |package object foo extends Foo[Int] {}
           |object Test {
           |  foo.xx$m1
@@ -841,5 +855,172 @@ class CompletionTest {
     code"""extension (i: Int) def xxxx = i
           |object Main { "abc".xx${m1} }""".withSource
       .completion(m1, Set())
+  }
+
+  @Test def i13365: Unit = {
+    code"""|import scala.quoted._
+        |
+        |object Test {
+        |  def test(using Quotes)(str: String) = {
+        |    import quotes.reflect._
+        |    val msg = Expr(str)
+        |    val printHello = '{ print("sdsd") }
+        |    val tree = printHello.asTerm
+        |    tree.sh${m1}
+        |  }
+        |}""".withSource
+      .completion(m1, Set(("show",Method, "(using x$2: x$1.reflect.Printer[x$1.reflect.Tree]): String")))
+  }
+
+  @Test def syntheticThis: Unit = {
+    code"""|class Y() {
+           |  def bar: Unit =
+           |    val argument: Int = ???
+           |    arg${m1}
+           |
+           |  def arg: String = ???
+           |}
+           |""".withSource
+      .completion(m1, Set(("arg", Method, "=> String"),
+                          ("argument", Field, "Int")))
+  }
+
+  @Test def concatMethodWithImplicits: Unit = {
+    code"""|object A {
+           |  Array.concat${m1}
+           |}""".withSource
+      .completion(
+          m1,
+          Set(
+            (
+              "concat",
+              Method,
+              "[T](xss: Array[T]*)(implicit evidence$11: scala.reflect.ClassTag[T]): Array[T]"
+            )
+          )
+        )
+  }
+
+  @Test def i12465_hkt: Unit =
+    code"""???.asInstanceOf[scala.collection.Seq].${m1}""".withSource
+      .completion(m1, Set())
+
+  @Test def i12465_hkt_alias: Unit =
+    code"""???.asInstanceOf[Seq].${m1}""".withSource
+      .completion(m1, Set())
+
+  @Test def i13624_annotType: Unit =
+    code"""|object Foo{
+           |  class MyAnnotation extends annotation.StaticAnnotation
+           |}
+           |class MyAnnotation extends annotation.StaticAnnotation
+           |class Annotation2(a: String) extends annotation.StaticAnnotation
+           |val x = 1: @MyAnnot${m1}
+           |type X = Int @MyAnnot${m2}
+           |val y = 1: @Foo.MyAnnot${m3}
+           |val z = 1: @Foo.MyAnnotation @MyAnno${m4}
+           |type Y = Int @MyAnnotation @Foo.MyAnnota${m5}
+           |val w = 1: @Annotation2("abc": @Foo.MyAnnot${m6})
+           |""".withSource
+      .completion(
+        m1,
+        Set(
+          ("MyAnnotation", Class, "MyAnnotation"),
+          ("MyAnnotation", Module, "MyAnnotation")
+        )
+      ).completion(
+        m2,
+        Set(
+          ("MyAnnotation", Class, "MyAnnotation"),
+          ("MyAnnotation", Module, "MyAnnotation")
+        )
+      ).completion(
+        m3,
+        Set(
+          ("MyAnnotation", Class, "Foo.MyAnnotation"),
+          ("MyAnnotation", Module, "Foo.MyAnnotation")
+        )
+      ).completion(
+        m4,
+        Set(
+          ("MyAnnotation", Class, "MyAnnotation"),
+          ("MyAnnotation", Module, "MyAnnotation")
+        )
+      ).completion(
+        m5,
+        Set(
+          ("MyAnnotation", Class, "Foo.MyAnnotation"),
+          ("MyAnnotation", Module, "Foo.MyAnnotation")
+        )
+      ).completion(
+        m6,
+        Set(
+          ("MyAnnotation", Class, "Foo.MyAnnotation"),
+          ("MyAnnotation", Module, "Foo.MyAnnotation")
+        )
+      )
+
+  @Test def i13624_annotation : Unit =
+    code"""@annotation.implicitNot${m1}
+          |@annotation.implicitNotFound @mai${m2}"""
+          .withSource
+          .completion(m1,
+            Set(
+              ("implicitNotFound", Class, "scala.annotation.implicitNotFound"),
+              ("implicitNotFound", Module, "scala.annotation.implicitNotFound")
+            )
+          )
+          .completion(m2,
+            Set(
+              ("main", Class, "scala.main"),
+              ("main", Module, "main")
+            )
+          )
+
+  @Test def i13623_annotation : Unit =
+    code"""import annot${m1}"""
+          .withSource
+          .completion(m1,
+            Set(
+              ("annotation", Module, "scala.annotation")
+            )
+          )
+
+  @Test def importAnnotationAfterImport : Unit =
+    code"""import java.lang.annotation; import annot${m1}"""
+        .withSource
+        .completion(m1,
+          Set(
+            ("annotation", Module, "scala.annotation")
+          )
+        )
+  @Test def completeTemplateConstrArgType: Unit = {
+    val expected = Set(
+      ("Future", Class, "scala.concurrent.Future"),
+      ("Future", Module, "scala.concurrent.Future")
+    )
+    code"""import scala.concurrent.Future
+          |class Foo(x: Fut${m1})""".withSource
+      .completion(m1, expected) 
+  }
+
+  @Test def completeTemplateParents: Unit = {
+    val expected = Set(
+      ("Future", Class, "scala.concurrent.Future"),
+      ("Future", Module, "scala.concurrent.Future")
+    )
+    code"""import scala.concurrent.Future
+          |class Foo extends Futu${m1}""".withSource
+      .completion(m1, expected) 
+  }
+
+  @Test def completeTemplateSelfType: Unit = {
+    val expected = Set(
+      ("Future", Class, "scala.concurrent.Future"),
+      ("Future", Module, "scala.concurrent.Future")
+    )
+    code"""import scala.concurrent.Future
+          |class Foo[A]{ self: Futu${m1} => }""".withSource
+      .completion(m1, expected) 
   }
 }

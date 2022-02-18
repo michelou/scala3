@@ -328,7 +328,7 @@ object SourceCode {
         }
         this
 
-      case Ident("_") =>
+      case Wildcard() =>
         this += "_"
 
       case tree: Ident =>
@@ -529,6 +529,9 @@ object SourceCode {
 
       case Closure(meth, _) =>
         printTree(meth)
+
+      case _:Unapply | _:Alternatives | _:Bind =>
+        printPattern(tree)
 
       case _ =>
         throw new MatchError(tree.show(using Printer.TreeStructure))
@@ -893,13 +896,13 @@ object SourceCode {
     }
 
     private def printPattern(pattern: Tree): this.type = pattern match {
-      case Ident("_") =>
+      case Wildcard() =>
         this += "_"
 
-      case Bind(name, Ident("_")) =>
+      case Bind(name, Wildcard()) =>
         this += name
 
-      case Bind(name, Typed(Ident("_"), tpt)) =>
+      case Bind(name, Typed(Wildcard(), tpt)) =>
         this += highlightValDef(name) += ": "
         printTypeTree(tpt)
 
@@ -925,9 +928,13 @@ object SourceCode {
       case Alternatives(trees) =>
         inParens(printPatterns(trees, " | "))
 
-      case Typed(Ident("_"), tpt) =>
-        this += "_: "
-        printTypeTree(tpt)
+      case TypedOrTest(tree1, tpt) =>
+        tree1 match
+          case Wildcard() =>
+            this += "_: "
+            printTypeTree(tpt)
+          case _ =>
+            printPattern(tree1)
 
       case v: Term =>
         printTree(v)
@@ -1049,7 +1056,7 @@ object SourceCode {
 
       case LambdaTypeTree(tparams, body) =>
         printTargsDefs(tparams.zip(tparams), isDef = false)
-        this += highlightTypeDef(" => ")
+        this += highlightTypeDef(" =>> ")
         printTypeOrBoundsTree(body)
 
       case TypeBind(name, _) =>
@@ -1215,18 +1222,17 @@ object SourceCode {
         this += "]"
         printType(tpe.resType)
 
-      case tpe: TypeLambda =>
-        this += "["
-        printList(tpe.paramNames.zip(tpe.paramBounds), ", ",
-          (x: (String, TypeBounds)) => (this += x._1 += " ").printType(x._2))
-        this += "] => "
-        printType(tpe.resType)
-
       case tpe@TypeBounds(lo, hi) =>
         this += "_ >: "
         printType(lo)
         this += " <: "
         printType(hi)
+
+      case MatchCase(pat, rhs) =>
+        this += "case "
+        printType(pat)
+        this += " => "
+        printType(rhs)
 
       case _ =>
         throw new MatchError(tpe.show(using Printer.TypeReprStructure))
@@ -1417,7 +1423,7 @@ object SourceCode {
       case '"' => "\\\""
       case '\'' => "\\\'"
       case '\\' => "\\\\"
-      case _ => if (ch.isControl) "\\0" + Integer.toOctalString(ch) else String.valueOf(ch)
+      case _ => if ch.isControl then f"${"\\"}u${ch.toInt}%04x" else String.valueOf(ch)
     }
 
     private def escapedString(str: String): String = str flatMap escapedChar

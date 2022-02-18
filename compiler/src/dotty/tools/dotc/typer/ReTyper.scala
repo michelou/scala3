@@ -22,7 +22,7 @@ import Nullables._
  *
  *  Otherwise, everything is as in Typer.
  */
-class ReTyper extends Typer with ReChecking {
+class ReTyper(nestingLevel: Int = 0) extends Typer(nestingLevel) with ReChecking {
   import tpd._
 
   private def assertTyped(tree: untpd.Tree)(using Context): Unit =
@@ -114,6 +114,9 @@ class ReTyper extends Typer with ReChecking {
       super.handleUnexpectedFunType(tree, fun)
   }
 
+  override def addCanThrowCapabilities(expr: untpd.Tree, cases: List[CaseDef])(using Context): untpd.Tree =
+    expr
+
   override def typedUnadapted(tree: untpd.Tree, pt: Type, locked: TypeVars)(using Context): Tree =
     try super.typedUnadapted(tree, pt, locked)
     catch {
@@ -134,4 +137,5 @@ class ReTyper extends Typer with ReChecking {
   override protected def addAccessorDefs(cls: Symbol, body: List[Tree])(using Context): List[Tree] = body
   override protected def checkEqualityEvidence(tree: tpd.Tree, pt: Type)(using Context): Unit = ()
   override protected def matchingApply(methType: MethodOrPoly, pt: FunProto)(using Context): Boolean = true
+  override protected def typedScala2MacroBody(call: untpd.Tree)(using Context): Tree = promote(call)
 }

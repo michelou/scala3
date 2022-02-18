@@ -18,6 +18,7 @@ import scala.concurrent.duration.Duration
 
 object Pickler {
   val name: String = "pickler"
+  val description: String = "generates TASTy info"
 
   /** If set, perform jump target compacting, position and comment pickling,
    *  as well as final assembly in parallel with downstream phases; force
@@ -31,6 +32,8 @@ class Pickler extends Phase {
   import ast.tpd._
 
   override def phaseName: String = Pickler.name
+
+  override def description: String = Pickler.description
 
   // No need to repickle trees coming from TASTY
   override def isRunnable(using Context): Boolean =
@@ -91,7 +94,7 @@ class Pickler extends Phase {
           if pickling ne noPrinter then
             pickling.synchronized {
               println(i"**** pickled info of $cls")
-              println(TastyPrinter.show(pickled))
+              println(TastyPrinter.showContents(pickled, ctx.settings.color.value == "never"))
             }
           pickled
         }(using ExecutionContext.global)
@@ -110,12 +113,12 @@ class Pickler extends Phase {
   override def runOn(units: List[CompilationUnit])(using Context): List[CompilationUnit] = {
     val result = super.runOn(units)
     if ctx.settings.YtestPickler.value then
+      val ctx2 = ctx.fresh.setSetting(ctx.settings.YreadComments, true)
       testUnpickler(
-        using ctx.fresh
-            .setPeriod(Period(ctx.runId + 1, FirstPhaseId))
+        using ctx2
+            .setPeriod(Period(ctx.runId + 1, ctx.base.typerPhase.id))
             .setReporter(new ThrowingReporter(ctx.reporter))
             .addMode(Mode.ReadPositions)
-            .addMode(Mode.ReadComments)
             .addMode(Mode.PrintShowExceptions))
     result
   }
@@ -125,7 +128,7 @@ class Pickler extends Phase {
     ctx.initialize()
     val unpicklers =
       for ((cls, pickler) <- picklers) yield {
-        val unpickler = new DottyUnpickler(pickler.assembleParts())
+        val unpickler = new DottyUnpickler(pickler.assembleParts(), ctx.tastyVersion)
         unpickler.enter(roots = Set.empty)
         cls -> unpickler
       }

@@ -6,8 +6,10 @@ import java.io.File
 
 object TestConfiguration {
 
+  val pageWidth = 120
+
   val noCheckOptions = Array(
-    "-pagewidth", "120",
+    "-pagewidth", pageWidth.toString,
     "-color:never",
     "-Xtarget", defaultTarget
   )
@@ -60,6 +62,7 @@ object TestConfiguration {
 
   val commonOptions = Array("-indent", "-language:postfixOps") ++ checkOptions ++ noCheckOptions ++ yCheckOptions
   val defaultOptions = TestFlags(basicClasspath, commonOptions)
+  val unindentOptions = TestFlags(basicClasspath, Array("-no-indent") ++ checkOptions ++ noCheckOptions ++ yCheckOptions)
   val withCompilerOptions =
     defaultOptions.withClasspath(withCompilerClasspath).withRunClasspath(withCompilerClasspath)
   lazy val withStagingOptions =

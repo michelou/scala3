@@ -7,7 +7,7 @@ import Settings._
 import core.Contexts._
 import Properties._
 
-import scala.collection.JavaConverters._
+import scala.PartialFunction.cond
 
 trait CliCommand:
 
@@ -41,28 +41,15 @@ trait CliCommand:
 
   /** Distill arguments into summary detailing settings, errors and files to main */
   def distill(args: Array[String], sg: Settings.SettingGroup)(ss: SettingsState = sg.defaultState)(using Context): ArgsSummary =
-    /**
-     * Expands all arguments starting with @ to the contents of the
-     * file named like each argument.
-     */
-    def expandArg(arg: String): List[String] =
-      def stripComment(s: String) = s takeWhile (_ != '#')
-      val path = Paths.get(arg stripPrefix "@")
-      if (!Files.exists(path))
-        report.error(s"Argument file ${path.getFileName} could not be found")
-        Nil
-      else
-        val lines = Files.readAllLines(path) // default to UTF-8 encoding
-        val params = lines.asScala map stripComment mkString " "
-        CommandLineParser.tokenize(params)
 
     // expand out @filename to the contents of that filename
     def expandedArguments = args.toList flatMap {
-      case x if x startsWith "@"  => expandArg(x)
+      case x if x startsWith "@"  => CommandLineParser.expandArg(x)
       case x                      => List(x)
     }
 
     sg.processArguments(expandedArguments, processAll = true, settingsState = ss)
+  end distill
 
   /** Creates a help message for a subset of options based on cond */
   protected def availableOptionsMsg(cond: Setting[?] => Boolean)(using settings: ConcreteSettings)(using SettingsState): String =
@@ -106,8 +93,9 @@ trait CliCommand:
           // For now, skip the default values that do not make sense for the end user.
           // For example 'false' for the version command.
           ""
-      s"${formatName(s.name)} ${formatDescription(s.description)}${formatSetting("Default", defaultValue)}${formatSetting("Choices", s.legalChoices)}"
+      s"${formatName(s.name)} ${formatDescription(shortHelp(s))}${formatSetting("Default", defaultValue)}${formatSetting("Choices", s.legalChoices)}"
     ss.map(helpStr).mkString("", "\n", s"\n${formatName("@<file>")} ${formatDescription("A text file containing compiler arguments (options and source files).")}\n")
+  end availableOptionsMsg
 
   protected def shortUsage: String = s"Usage: $cmdName <options> <source files>"
 
@@ -121,25 +109,61 @@ trait CliCommand:
     prefix + "\n" + availableOptionsMsg(cond)
 
   protected def isStandard(s: Setting[?])(using settings: ConcreteSettings)(using SettingsState): Boolean =
-    !isAdvanced(s) && !isPrivate(s)
+    !isVerbose(s) && !isWarning(s) && !isAdvanced(s) && !isPrivate(s) || s.name == "-Werror" || s.name == "-Wconf"
+  protected def isVerbose(s: Setting[?])(using settings: ConcreteSettings)(using SettingsState): Boolean =
+    s.name.startsWith("-V") && s.name != "-V"
+  protected def isWarning(s: Setting[?])(using settings: ConcreteSettings)(using SettingsState): Boolean =
+    s.name.startsWith("-W") && s.name != "-W" || s.name == "-Xlint"
   protected def isAdvanced(s: Setting[?])(using settings: ConcreteSettings)(using SettingsState): Boolean =
     s.name.startsWith("-X") && s.name != "-X"
   protected def isPrivate(s: Setting[?])(using settings: ConcreteSettings)(using SettingsState): Boolean =
     s.name.startsWith("-Y") && s.name != "-Y"
+  protected def shortHelp(s: Setting[?])(using settings: ConcreteSettings)(using SettingsState): String =
+    s.description.linesIterator.next()
+  protected def isHelping(s: Setting[?])(using settings: ConcreteSettings)(using SettingsState): Boolean =
+    cond(s.value) {
+      case ss: List[?] if s.isMultivalue => ss.contains("help")
+      case s: String                     => "help" == s
+    }
 
   /** Messages explaining usage and options */
   protected def usageMessage(using settings: ConcreteSettings)(using SettingsState) =
     createUsageMsg("where possible standard", shouldExplain = false, isStandard)
+  protected def vusageMessage(using settings: ConcreteSettings)(using SettingsState) =
+    createUsageMsg("Possible verbose", shouldExplain = true, isVerbose)
+  protected def wusageMessage(using settings: ConcreteSettings)(using SettingsState) =
+    createUsageMsg("Possible warning", shouldExplain = true, isWarning)
   protected def xusageMessage(using settings: ConcreteSettings)(using SettingsState) =
     createUsageMsg("Possible advanced", shouldExplain = true, isAdvanced)
   protected def yusageMessage(using settings: ConcreteSettings)(using SettingsState) =
     createUsageMsg("Possible private", shouldExplain = true, isPrivate)
 
-  protected def phasesMessage: String =
-    (new Compiler()).phases.map {
-      case List(single) => single.phaseName
-      case more => more.map(_.phaseName).mkString("{", ", ", "}")
-    }.mkString("\n")
+  /** Used for the formatted output of -Xshow-phases */
+  protected def phasesMessage(using ctx: Context): String =
+  
+    val phases = new Compiler().phases
+    val nameLimit = 25 
+    val maxCol = ctx.settings.pageWidth.value
+    val maxName = phases.flatten.map(_.phaseName.length).max
+    val width = maxName.min(nameLimit)
+    val maxDesc = maxCol - (width + 6)
+    val fmt = s"%${width}.${width}s  %.${maxDesc}s%n"
+
+    val sb = new StringBuilder
+    sb ++= fmt.format("phase name", "description")
+    sb ++= fmt.format("----------", "-----------")
+
+    phases.foreach {
+      case List(single) =>
+        sb ++= fmt.format(single.phaseName, single.description)
+      case Nil => ()
+      case more =>
+        sb ++= fmt.format(s"{", "")
+        more.foreach { mini => sb ++= fmt.format(mini.phaseName, mini.description) }
+        sb ++= fmt.format(s"}", "")
+    }
+    sb.mkString
+
 
   /** Provide usage feedback on argument summary, assuming that all settings
    *  are already applied in context.

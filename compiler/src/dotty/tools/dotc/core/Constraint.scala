@@ -93,13 +93,15 @@ abstract class Constraint extends Showable {
   /** A constraint that includes the relationship `p1 <: p2`.
    *  `<:` relationships between parameters ("edges") are propagated, but
    *  non-parameter bounds are left alone.
+   *
+   *  @param direction  Must be set to `KeepParam1` or `KeepParam2` when
+   *                    `p2 <: p1` is already true depending on which parameter
+   *                    the caller intends to keep. This will avoid propagating
+   *                    bounds that will be redundant after `p1` and `p2` are
+   *                    unified.
    */
-  def addLess(p1: TypeParamRef, p2: TypeParamRef)(using Context): This
-
-  /** A constraint resulting from adding p2 = p1 to this constraint, and at the same
-   *  time transferring all bounds of p2 to p1
-   */
-  def unify(p1: TypeParamRef, p2: TypeParamRef)(using Context): This
+  def addLess(p1: TypeParamRef, p2: TypeParamRef,
+    direction: UnificationDirection = UnificationDirection.NoUnification)(using Context): This
 
   /** A new constraint which is derived from this constraint by removing
    *  the type parameter `param` from the domain and replacing all top-level occurrences
@@ -118,8 +120,11 @@ abstract class Constraint extends Showable {
   /** A new constraint with all entries coming from `tl` removed. */
   def remove(tl: TypeLambda)(using Context): This
 
-  /** A new constraint with entry `tl` renamed to a fresh type lambda */
-  def rename(tl: TypeLambda)(using Context): This
+  /** A new constraint with entry `from` replaced with `to`
+   *  Rerences to `from` from within other constraint bounds are updated to `to`.
+   *  Type variables are left alone.
+   */
+  def subst(from: TypeLambda, to: TypeLambda)(using Context): This
 
   /** Gives for each instantiated type var that does not yet have its `inst` field
    *  set, the instance value stored in the constraint. Storing instances in constraints
@@ -149,13 +154,10 @@ abstract class Constraint extends Showable {
    */
   def uninstVars: collection.Seq[TypeVar]
 
-  /** The weakest constraint that subsumes both this constraint and `other`.
-   *
-   *  @param otherHasErrors    If true, handle incompatible constraints by
-   *                           returning an approximate constraint, instead of
-   *                           failing with an exception
+  /** Whether `tl` is present in both `this` and `that` but is associated with
+   *  different TypeVars there, meaning that the constraints cannot be merged.
    */
-  def & (other: Constraint, otherHasErrors: Boolean)(using Context): Constraint
+  def hasConflictingTypeVarsFor(tl: TypeLambda, that: Constraint): Boolean
 
   /** Check that no constrained parameter contains itself as a bound */
   def checkNonCyclic()(using Context): this.type
@@ -169,6 +171,20 @@ abstract class Constraint extends Showable {
   /** Check that constraint only refers to TypeParamRefs bound by itself */
   def checkClosed()(using Context): Unit
 
-  /** A string describing the constraint's contents without a header or trailer */
-  def contentsToString(using Context): String
+  /** Check that every typevar om this constraint has as origin a type parameter
+   *  of athe type lambda that is associated with the typevar itself.
+   */
+  def checkConsistentVars()(using Context): Unit
 }
+
+/** When calling `Constraint#addLess(p1, p2, ...)`, the caller might end up
+ *  unifying one parameter with the other, this enum lets `addLess` know which
+ *  direction the unification will take.
+ */
+enum UnificationDirection:
+  /** Neither p1 nor p2 will be instantiated. */
+  case NoUnification
+  /** `p2 := p1`, p1 left uninstantiated. */
+  case KeepParam1
+  /** `p1 := p2`, p2 left uninstantiated. */
+  case KeepParam2

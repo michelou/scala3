@@ -634,7 +634,6 @@ class TreeUnpickler(reader: TastyReader,
         }
         nextByte match {
           case PRIVATE => addFlag(Private)
-          case INTERNAL => ??? // addFlag(Internal)
           case PROTECTED => addFlag(Protected)
           case ABSTRACT =>
             readByte()
@@ -832,7 +831,11 @@ class TreeUnpickler(reader: TastyReader,
           val tpt = readTpt()(using localCtx)
           val paramss = normalizeIfConstructor(
               paramDefss.nestedMap(_.symbol), name == nme.CONSTRUCTOR)
-          val resType = effectiveResultType(sym, paramss, tpt.tpe)
+          val resType =
+            if name == nme.CONSTRUCTOR then
+              effectiveResultType(sym, paramss)
+            else
+              tpt.tpe
           sym.info = methodType(paramss, resType)
           DefDef(paramDefss, tpt)
         case VALDEF =>
@@ -857,36 +860,45 @@ class TreeUnpickler(reader: TastyReader,
             sym.info = TypeBounds.empty // needed to avoid cyclic references when unpickling rhs, see i3816.scala
             sym.setFlag(Provisional)
             val rhs = readTpt()(using localCtx)
-            sym.info = new NoCompleter {
+
+            sym.info = new NoCompleter:
               override def completerTypeParams(sym: Symbol)(using Context) =
                 rhs.tpe.typeParams
-            }
-            sym.info = sym.opaqueToBounds(
-              checkNonCyclic(sym, rhs.tpe.toBounds, reportErrors = false),
-              rhs, rhs.tpe.typeParams)
-            if sym.isOpaqueAlias then sym.typeRef.recomputeDenot() // make sure we see the new bounds from now on
+
+            def opaqueToBounds(info: Type): Type =
+              val tparamSyms = rhs match
+                case LambdaTypeTree(tparams, body) => tparams.map(_.symbol.asType)
+                case _ => Nil
+              sym.opaqueToBounds(info, rhs, tparamSyms)
+
+            val info = checkNonCyclic(sym, rhs.tpe.toBounds, reportErrors = false)
+            if sym.isOpaqueAlias then
+              sym.info = opaqueToBounds(info)
+              sym.typeRef.recomputeDenot() // make sure we see the new bounds from now on
+            else
+              sym.info = info
+
             sym.resetFlag(Provisional)
             TypeDef(rhs)
           }
         case PARAM =>
           val tpt = readTpt()(using localCtx)
-          if (nothingButMods(end)) {
-            sym.info = tpt.tpe
-            ValDef(tpt)
-          }
-          else {
-            sym.info = ExprType(tpt.tpe)
-            pickling.println(i"reading param alias $name -> $currentAddr")
-            DefDef(Nil, tpt)
-          }
+          assert(nothingButMods(end))
+          sym.info = tpt.tpe
+          ValDef(tpt)
       }
       goto(end)
       setSpan(start, tree)
-      if (!sym.isType) // Only terms might have leaky aliases, see the documentation of `checkNoPrivateLeaks`
+
+      // Dealias any non-accessible type alias in the type of `sym`. This can be
+      // skipped for types (see `checkNoPrivateLeaks` for why) as well as for
+      // param accessors since they can't refer to an inaccesible type member of
+      // the class.
+      if !sym.isType && !sym.is(ParamAccessor) then
         sym.info = ta.avoidPrivateLeaks(sym)
 
-      if (ctx.mode.is(Mode.ReadComments)) {
-        assert(ctx.docCtx.isDefined, "Mode is `ReadComments`, but no `docCtx` is set.")
+      if (ctx.settings.YreadComments.value) {
+        assert(ctx.docCtx.isDefined, "`-Yread-docs` enabled, but no `docCtx` is set.")
         commentUnpicklerOpt.foreach { commentUnpickler =>
           val comment = commentUnpickler.commentAt(start)
           ctx.docCtx.get.addDocstring(tree.symbol, comment)
@@ -1061,12 +1073,10 @@ class TreeUnpickler(reader: TastyReader,
       def makeSelect(qual: Tree, name: Name, denot: Denotation): Select =
         var qualType = qual.tpe.widenIfUnstable
         val owner = denot.symbol.maybeOwner
-        if (owner.isPackageObject && qualType.termSymbol.is(Package))
-          qualType = qualType.select(owner.sourceModule)
-        val tpe = name match {
+        val tpe0 = name match
           case name: TypeName => TypeRef(qualType, name, denot)
           case name: TermName => TermRef(qualType, name, denot)
-        }
+        val tpe = TypeOps.makePackageObjPrefixExplicit(tpe0)
         ConstFold.Select(untpd.Select(qual, name).withType(tpe))
 
       def completeSelect(name: Name, sig: Signature, target: Name): Select =
@@ -1199,8 +1209,8 @@ class TreeUnpickler(reader: TastyReader,
                *  or an override has been removed.
                *
                *  This is tested in
-               *  - sbt-dotty/sbt-test/tasty-compat/remove-override
-               *  - sbt-dotty/sbt-test/tasty-compat/move-method
+               *  - sbt-test/tasty-compat/remove-override
+               *  - sbt-test/tasty-compat/move-method
                */
               def lookupInSuper =
                 val cls = ownerTpe.classSymbol
@@ -1278,7 +1288,7 @@ class TreeUnpickler(reader: TastyReader,
               val idx = readNat()
               val tpe = readType()
               val args = until(end)(readTerm())
-              TreePickler.Hole(true, idx, args).withType(tpe)
+              Hole(true, idx, args).withType(tpe)
             case _ =>
               readPathTerm()
           }
@@ -1287,8 +1297,6 @@ class TreeUnpickler(reader: TastyReader,
       }
 
       val tree = if (tag < firstLengthTreeTag) readSimpleTerm() else readLengthTerm()
-      if (!tree.isInstanceOf[TypTree]) // FIXME: Necessary to avoid self-type cyclic reference in tasty_tools
-        tree.overwriteType(tree.tpe.simplified)
       setSpan(start, tree)
     }
 
@@ -1314,7 +1322,7 @@ class TreeUnpickler(reader: TastyReader,
           val idx = readNat()
           val tpe = readType()
           val args = until(end)(readTerm())
-          TreePickler.Hole(false, idx, args).withType(tpe)
+          Hole(false, idx, args).withType(tpe)
         case _ =>
           if (isTypeTreeTag(nextByte)) readTerm()
           else {
@@ -1353,7 +1361,9 @@ class TreeUnpickler(reader: TastyReader,
     def readLaterWithOwner[T <: AnyRef](end: Addr, op: TreeReader => Context ?=> T)(using Context): Symbol => Trees.Lazy[T] = {
       val localReader = fork
       goto(end)
-      owner => new LazyReader(localReader, owner, ctx.mode, ctx.source, op)
+      val mode = ctx.mode
+      val source = ctx.source
+      owner => new LazyReader(localReader, owner, mode, source, op)
     }
 
 // ------ Setting positions ------------------------------------------------
@@ -1397,7 +1407,7 @@ class TreeUnpickler(reader: TastyReader,
       if (path.nonEmpty) {
         val sourceFile = ctx.getSource(path)
         posUnpicklerOpt match
-          case Some(posUnpickler) =>
+          case Some(posUnpickler) if !sourceFile.initialized =>
             sourceFile.setLineIndicesFromLineSizes(posUnpickler.lineSizes)
           case _ =>
         pickling.println(i"source change at $addr: $path")
@@ -1510,9 +1520,9 @@ object TreeUnpickler {
 
   /** An enumeration indicating which subtrees should be added to an OwnerTree. */
   type MemberDefMode = Int
-  final val MemberDefsOnly = 0   // add only member defs; skip other statements
-  final val NoMemberDefs = 1     // add only statements that are not member defs
-  final val AllDefs = 2          // add everything
+  inline val MemberDefsOnly = 0   // add only member defs; skip other statements
+  inline val NoMemberDefs = 1     // add only statements that are not member defs
+  inline val AllDefs = 2          // add everything
 
   class TreeWithoutOwner extends Exception
 }

@@ -359,19 +359,6 @@ object JavaParsers {
       * but instead we skip entire annotation silently.
       */
     def annotation(): Option[Tree] = {
-      object LiteralT:
-        def unapply(token: Token) = Option(token match {
-          case TRUE      => true
-          case FALSE     => false
-          case CHARLIT   => in.name(0)
-          case INTLIT    => in.intVal(false).toInt
-          case LONGLIT   => in.intVal(false)
-          case FLOATLIT  => in.floatVal(false).toFloat
-          case DOUBLELIT => in.floatVal(false)
-          case STRINGLIT => in.name.toString
-          case _         => null
-        }).map(Constant(_))
-
       def classOrId(): Tree =
         val id = qualId()
         if in.lookaheadToken == CLASS then
@@ -398,17 +385,17 @@ object JavaParsers {
         }
 
       def argValue(): Option[Tree] =
-        val tree = in.token match {
-          case LiteralT(c) =>
-            val tree = atSpan(in.offset)(Literal(c))
-            in.nextToken()
-            Some(tree)
-          case AT =>
-            in.nextToken()
-            annotation()
-          case IDENTIFIER => Some(classOrId())
-          case LBRACE => array()
-          case _ => None
+        val tree = tryConstant match {
+          case Some(c) =>
+            Some(atSpan(in.offset)(Literal(c)))
+          case _ => in.token match {
+            case AT =>
+              in.nextToken()
+              annotation()
+            case IDENTIFIER => Some(classOrId())
+            case LBRACE => array()
+            case _ => None
+          }
         }
         if in.token == COMMA || in.token == RBRACE || in.token == RPAREN then
           tree
@@ -716,11 +703,7 @@ object JavaParsers {
 
         in.nextToken() // EQUALS
         if (mods.is(Flags.JavaStatic) && mods.is(Flags.Final)) {
-          val neg = in.token match {
-            case MINUS | BANG => in.nextToken(); true
-            case _ => false
-          }
-          tryLiteral(neg).map(forConst).getOrElse(tpt1)
+          tryConstant.map(forConst).getOrElse(tpt1)
         }
         else tpt1
       }
@@ -751,35 +734,8 @@ object JavaParsers {
           makeTemplate(List(), statics, List(), false)).withMods((cdef.mods & Flags.RetainedModuleClassFlags).toTermFlags)
       }
 
-    def importCompanionObject(cdef: TypeDef): Tree =
-      Import(
-        Ident(cdef.name.toTermName).withSpan(NoSpan),
-        ImportSelector(Ident(nme.WILDCARD)) :: Nil)
-
-    // Importing the companion object members cannot be done uncritically: see
-    // ticket #2377 wherein a class contains two static inner classes, each of which
-    // has a static inner class called "Builder" - this results in an ambiguity error
-    // when each performs the import in the enclosing class's scope.
-    //
-    // To address this I moved the import Companion._ inside the class, as the first
-    // statement.  This should work without compromising the enclosing scope, but may (?)
-    // end up suffering from the same issues it does in scala - specifically that this
-    // leaves auxiliary constructors unable to access members of the companion object
-    // as unqualified identifiers.
-    def addCompanionObject(statics: List[Tree], cdef: TypeDef): List[Tree] = {
-      // if there are no statics we can use the original cdef, but we always
-      // create the companion so import A._ is not an error (see ticket #1700)
-      val cdefNew =
-        if (statics.isEmpty) cdef
-        else {
-          val template = cdef.rhs.asInstanceOf[Template]
-          cpy.TypeDef(cdef)(cdef.name,
-            cpy.Template(template)(body = importCompanionObject(cdef) :: template.body))
-              .withMods(cdef.mods)
-        }
-
-      List(makeCompanionObject(cdefNew, statics), cdefNew)
-    }
+    def addCompanionObject(statics: List[Tree], cdef: TypeDef): List[Tree] =
+      List(makeCompanionObject(cdef, statics), cdef)
 
     def importDecl(): List[Tree] = {
       val start = in.offset
@@ -901,16 +857,7 @@ object JavaParsers {
             members) ++= decls
         }
       }
-      def forwarders(sdef: Tree): List[Tree] = sdef match {
-        case TypeDef(name, _) if (parentToken == INTERFACE) =>
-          var rhs: Tree = Select(Ident(parentName.toTermName), name)
-          List(TypeDef(name, rhs).withMods(Modifiers(Flags.Protected)))
-        case _ =>
-          List()
-      }
-      val sdefs = statics.toList
-      val idefs = members.toList ::: (sdefs flatMap forwarders)
-      (sdefs, idefs)
+      (statics.toList, members.toList)
     }
     def annotationParents: List[Select] = List(
       scalaAnnotationDot(tpnme.Annotation),
@@ -1012,7 +959,11 @@ object JavaParsers {
       case _         => in.nextToken(); syntaxError("illegal start of type declaration", skipIt = true); List(errorTypeTree)
     }
 
-    def tryLiteral(negate: Boolean = false): Option[Constant] = {
+    def tryConstant: Option[Constant] = {
+      val negate = in.token match {
+        case MINUS | BANG => in.nextToken(); true
+        case _ => false
+      }
       val l = in.token match {
         case TRUE      => !negate
         case FALSE     => negate
@@ -1062,7 +1013,9 @@ object JavaParsers {
       }
       val unit = atSpan(start) { PackageDef(pkg, buf.toList) }
       accept(EOF)
-      unit
+      unit match
+        case PackageDef(Ident(nme.EMPTY_PACKAGE), Nil) => EmptyTree
+        case _ => unit
     }
   }
 

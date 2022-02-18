@@ -28,7 +28,7 @@ import config.Printers.{ transforms => debug }
 object TypeTestsCasts {
   import ast.tpd._
   import typer.Inferencing.maximizeType
-  import typer.ProtoTypes.{ constrained, newTypeVar }
+  import typer.ProtoTypes.constrained
 
   /** Whether `(x:X).isInstanceOf[P]` can be checked at runtime?
    *
@@ -98,8 +98,10 @@ object TypeTestsCasts {
         //
         // If we perform widening, we will get X = Nothing, and we don't have
         // Ident[X] <:< Ident[Int] any more.
-        TypeComparer.constrainPatternType(P1, X, widenParams = false)
-        debug.println(TypeComparer.explained(_.constrainPatternType(P1, X, widenParams = false)))
+        TypeComparer.constrainPatternType(P1, X, forceInvariantRefinement = true)
+        debug.println(
+          TypeComparer.explained(_.constrainPatternType(P1, X, forceInvariantRefinement = true))
+        )
       }
 
       // Maximization of the type means we try to cover all possible values
@@ -295,7 +297,7 @@ object TypeTestsCasts {
             derivedTree(expr, defn.Any_asInstanceOf, testType)
         }
 
-        /** Transform isInstanceOf OrType
+        /** Transform isInstanceOf
          *
          *    expr.isInstanceOf[A | B]  ~~>  expr.isInstanceOf[A] | expr.isInstanceOf[B]
          *    expr.isInstanceOf[A & B]  ~~>  expr.isInstanceOf[A] & expr.isInstanceOf[B]
@@ -337,15 +339,21 @@ object TypeTestsCasts {
           case AppliedType(tref: TypeRef, _) if tref.symbol == defn.PairClass =>
             ref(defn.RuntimeTuples_isInstanceOfNonEmptyTuple).appliedTo(expr)
           case _ =>
-            val erasedTestType = erasure(testType)
-            transformIsInstanceOf(expr, erasedTestType, erasedTestType, flagUnrelated)
+            val testWidened = testType.widen
+            defn.untestableClasses.find(testWidened.isRef(_)) match
+              case Some(untestable) =>
+                report.error(i"$untestable cannot be used in runtime type tests", tree.srcPos)
+                constant(expr, Literal(Constant(false)))
+              case _ =>
+                val erasedTestType = erasure(testType)
+                transformIsInstanceOf(expr, erasedTestType, erasedTestType, flagUnrelated)
         }
 
         if (sym.isTypeTest) {
           val argType = tree.args.head.tpe
           val isTrusted = tree.hasAttachment(PatternMatcher.TrustedTypeTestKey)
           if (!isTrusted && !checkable(expr.tpe, argType, tree.span))
-            report.warning(i"the type test for $argType cannot be checked at runtime", tree.srcPos)
+            report.uncheckedWarning(i"the type test for $argType cannot be checked at runtime", expr.srcPos)
           transformTypeTest(expr, tree.args.head.tpe, flagUnrelated = true)
         }
         else if (sym.isTypeCast)

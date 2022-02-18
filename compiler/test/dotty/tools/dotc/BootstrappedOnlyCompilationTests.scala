@@ -29,6 +29,7 @@ class BootstrappedOnlyCompilationTests {
       compileFilesInDir("tests/pos-custom-args/semanticdb", defaultOptions.and("-Xsemanticdb")),
       compileDir("tests/pos-special/i7592", defaultOptions.and("-Yretain-trees")),
       compileDir("tests/pos-special/i11331.1", defaultOptions),
+      compileDir("tests/pos-custom-args/i13405", defaultOptions.and("-Xfatal-warnings")),
     ).checkCompile()
   }
 
@@ -118,6 +119,7 @@ class BootstrappedOnlyCompilationTests {
     aggregateTests(
       compileFilesInDir("tests/run-macros", defaultOptions.and("-Xcheck-macros")),
       compileFilesInDir("tests/run-custom-args/Yretain-trees", defaultOptions and "-Yretain-trees"),
+      compileFilesInDir("tests/run-custom-args/Yread-comments", defaultOptions and "-Yread-docs"),
       compileFilesInDir("tests/run-custom-args/run-macros-erased", defaultOptions.and("-language:experimental.erasedDefinitions").and("-Xcheck-macros")),
     )
   }.checkRuns()

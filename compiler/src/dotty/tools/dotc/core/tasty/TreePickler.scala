@@ -22,21 +22,10 @@ import annotation.constructorOnly
 import collection.mutable
 import dotty.tools.tasty.TastyFormat.ASTsSection
 
-object TreePickler {
-
-  case class Hole(isTermHole: Boolean, idx: Int, args: List[tpd.Tree])(implicit @constructorOnly src: SourceFile) extends tpd.Tree {
-    override def isTerm: Boolean = isTermHole
-    override def isType: Boolean = !isTermHole
-    override def fallbackToText(printer: Printer): Text =
-      if isTermHole then s"{{{ $idx |" ~~ printer.toTextGlobal(tpe) ~~ "|" ~~ printer.toTextGlobal(args, ", ") ~~ "}}}"
-      else s"[[[ $idx |" ~~ printer.toTextGlobal(tpe) ~~ "|" ~~ printer.toTextGlobal(args, ", ") ~~ "]]]"
-  }
-}
 
 class TreePickler(pickler: TastyPickler) {
   val buf: TreeBuffer = new TreeBuffer
   pickler.newSection(ASTsSection, buf)
-  import TreePickler._
   import buf._
   import pickler.nameBuffer.nameIndex
   import tpd._
@@ -100,11 +89,6 @@ class TreePickler(pickler: TastyPickler) {
     case Some(label) =>
       if (label != NoAddr) writeRef(label) else pickleForwardSymRef(sym)
     case None =>
-      // See pos/t1957.scala for an example where this can happen.
-      // I believe it's a bug in typer: the type of an implicit argument refers
-      // to a closure parameter outside the closure itself. TODO: track this down, so that we
-      // can eliminate this case.
-      report.log(i"pickling reference to as yet undefined $sym in ${sym.owner}", sym.srcPos)
       pickleForwardSymRef(sym)
   }
 
@@ -217,6 +201,8 @@ class TreePickler(pickler: TastyPickler) {
       }
       else if (tpe.prefix == NoPrefix) {
         writeByte(if (tpe.isType) TYPEREFdirect else TERMREFdirect)
+        if !symRefs.contains(sym) && !sym.isPatternBound && !sym.hasAnnotation(defn.QuotedRuntimePatterns_patternTypeAnnot) then
+          report.error(i"pickling reference to as yet undefined $tpe with symbol ${sym}", sym.srcPos)
         pickleSymRef(sym)
       }
       else tpe.designator match {
@@ -332,6 +318,7 @@ class TreePickler(pickler: TastyPickler) {
 
   def pickleDef(tag: Int, mdef: MemberDef, tpt: Tree, rhs: Tree = EmptyTree, pickleParams: => Unit = ())(using Context): Unit = {
     val sym = mdef.symbol
+
     assert(symRefs(sym) == NoAddr, sym)
     registerDef(sym)
     writeByte(tag)
@@ -355,8 +342,7 @@ class TreePickler(pickler: TastyPickler) {
   def pickleParam(tree: Tree)(using Context): Unit = {
     registerTreeAddr(tree)
     tree match {
-      case tree: ValDef => pickleDef(PARAM, tree, tree.tpt)
-      case tree: DefDef => pickleDef(PARAM, tree, tree.tpt, tree.rhs)
+      case tree: ValDef  => pickleDef(PARAM, tree, tree.tpt)
       case tree: TypeDef => pickleDef(TYPEPARAM, tree, tree.rhs)
     }
   }
@@ -411,7 +397,7 @@ class TreePickler(pickler: TastyPickler) {
               var ename = tree.symbol.targetName
               val selectFromQualifier =
                 name.isTypeName
-                || qual.isInstanceOf[TreePickler.Hole] // holes have no symbol
+                || qual.isInstanceOf[Hole] // holes have no symbol
                 || sig == Signature.NotAMethod // no overload resolution necessary
                 || !tree.denot.symbol.exists // polymorphic function type
                 || tree.denot.asSingleDenotation.isRefinedMethod // refined methods have no defining class symbol
@@ -731,9 +717,10 @@ class TreePickler(pickler: TastyPickler) {
     if flags.is(Infix) then writeModTag(INFIX)
     if flags.is(Invisible) then writeModTag(INVISIBLE)
     if (flags.is(Erased)) writeModTag(ERASED)
+    if (flags.is(Exported)) writeModTag(EXPORTED)
+    if (flags.is(Given)) writeModTag(GIVEN)
+    if (flags.is(Implicit)) writeModTag(IMPLICIT)
     if (isTerm) {
-      if (flags.is(Implicit)) writeModTag(IMPLICIT)
-      if (flags.is(Given)) writeModTag(GIVEN)
       if (flags.is(Lazy, butNot = Module)) writeModTag(LAZY)
       if (flags.is(AbsOverride)) { writeModTag(ABSTRACT); writeModTag(OVERRIDE) }
       if (flags.is(Mutable)) writeModTag(MUTABLE)
@@ -744,7 +731,6 @@ class TreePickler(pickler: TastyPickler) {
       if (flags.is(Extension)) writeModTag(EXTENSION)
       if (flags.is(ParamAccessor)) writeModTag(PARAMsetter)
       if (flags.is(SuperParamAlias)) writeModTag(PARAMalias)
-      if (flags.is(Exported)) writeModTag(EXPORTED)
       assert(!(flags.is(Label)))
     }
     else {

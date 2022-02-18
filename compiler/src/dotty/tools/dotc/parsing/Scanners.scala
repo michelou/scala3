@@ -135,14 +135,19 @@ object Scanners {
       */
     protected def putChar(c: Char): Unit = litBuf.append(c)
 
-    /** Clear buffer and set name and token */
-    def finishNamed(idtoken: Token = IDENTIFIER, target: TokenData = this): Unit = {
+    /** Finish an IDENTIFIER with `this.name`. */
+    inline def finishNamed(): Unit = finishNamedToken(IDENTIFIER, this)
+
+    /** Clear buffer and set name and token.
+     *  If `target` is different from `this`, don't treat identifiers as end tokens.
+     */
+    def finishNamedToken(idtoken: Token, target: TokenData): Unit =
       target.name = termName(litBuf.chars, 0, litBuf.length)
       litBuf.clear()
       target.token = idtoken
-      if (idtoken == IDENTIFIER)
-        target.token = toToken(target.name)
-    }
+      if idtoken == IDENTIFIER then
+        val converted = toToken(target.name)
+        if converted != END || (target eq this) then target.token = converted
 
     /** The token for given `name`. Either IDENTIFIER or a keyword. */
     def toToken(name: SimpleName): Token
@@ -240,23 +245,18 @@ object Scanners {
     /** A buffer for comments */
     private val commentBuf = CharBuffer()
 
-    private def handleMigration(keyword: Token): Token =
-      if scala3keywords.contains(keyword) && migrateTo3 then treatAsIdent()
-      else keyword
-
-    private def treatAsIdent(): Token =
-      report.errorOrMigrationWarning(
-        i"$name is now a keyword, write `$name` instead of $name to keep it as an identifier",
-        sourcePos())
-      patch(source, Span(offset), "`")
-      patch(source, Span(offset + name.length), "`")
-      IDENTIFIER
-
-    def toToken(name: SimpleName): Token = {
-      val idx = name.start
+    def toToken(identifier: SimpleName): Token =
+      def handleMigration(keyword: Token): Token =
+        if scala3keywords.contains(keyword) && migrateTo3 then
+          val what = tokenString(keyword)
+          report.errorOrMigrationWarning(i"$what is now a keyword, write `$what` instead of $what to keep it as an identifier", sourcePos())
+          patch(source, Span(offset), "`")
+          patch(source, Span(offset + identifier.length), "`")
+          IDENTIFIER
+        else keyword
+      val idx = identifier.start
       if (idx >= 0 && idx <= lastKeywordStart) handleMigration(kwArray(idx))
       else IDENTIFIER
-    }
 
     def newTokenData: TokenData = new TokenData {}
 
@@ -367,6 +367,8 @@ object Scanners {
       *   - it does not follow a blank line, and
       *   - it is followed by at least one whitespace character and a
       *     token that can start an expression.
+      *   - if the operator appears on its own line, the next line must have at least
+      *     the same indentation width as the operator. See pos/i12395 for a test where this matters.
       *  If a leading infix operator is found and the source version is `3.0-migration`, emit a change warning.
       */
     def isLeadingInfixOperator(nextWidth: IndentWidth = indentWidth(offset), inConditional: Boolean = true) =
@@ -377,8 +379,8 @@ object Scanners {
       && {
         // Is current lexeme  assumed to start an expression?
         // This is the case if the lexime is one of the tokens that
-        // starts an expression. Furthermore, if the previous token is
-        // in backticks, the lexeme may not be a binary operator.
+        // starts an expression or it is a COLONEOL. Furthermore, if
+        // the previous token is in backticks, the lexeme may not be a binary operator.
         // I.e. in
         //
         //   a
@@ -388,14 +390,16 @@ object Scanners {
         // in backticks and is a binary operator. Hence, `x` is not classified as a
         // leading infix operator.
         def assumeStartsExpr(lexeme: TokenData) =
-          canStartExprTokens.contains(lexeme.token)
+          (canStartExprTokens.contains(lexeme.token) || lexeme.token == COLONEOL)
           && (!lexeme.isOperator || nme.raw.isUnary(lexeme.name))
         val lookahead = LookaheadScanner()
         lookahead.allowLeadingInfixOperators = false
           // force a NEWLINE a after current token if it is on its own line
         lookahead.nextToken()
         assumeStartsExpr(lookahead)
-        || lookahead.token == NEWLINE && assumeStartsExpr(lookahead.next)
+        || lookahead.token == NEWLINE
+           && assumeStartsExpr(lookahead.next)
+           && indentWidth(offset) <= indentWidth(lookahead.next.offset)
       }
       && {
         currentRegion match
@@ -535,7 +539,7 @@ object Scanners {
            || nextWidth == lastWidth && (indentPrefix == MATCH || indentPrefix == CATCH) && token != CASE then
           if currentRegion.isOutermost then
             if nextWidth < lastWidth then currentRegion = topLevelRegion(nextWidth)
-          else if !isLeadingInfixOperator(nextWidth) && !statCtdTokens.contains(lastToken) then
+          else if !isLeadingInfixOperator(nextWidth) && !statCtdTokens.contains(lastToken) && lastToken != INDENT then
             currentRegion match
               case r: Indented =>
                 currentRegion = r.enclosing
@@ -595,7 +599,9 @@ object Scanners {
       case r: Indented
       if !r.isOutermost
          && closingRegionTokens.contains(token)
-         && !(token == CASE && r.prefix == MATCH) =>
+         && !(token == CASE && r.prefix == MATCH)
+         && next.token == EMPTY  // can be violated for ill-formed programs, e.g. neg/i12605.sala
+      =>
         currentRegion = r.enclosing
         insert(OUTDENT, offset)
       case _ =>
@@ -604,6 +610,7 @@ object Scanners {
       prev.copyFrom(this)
       lastOffset = lastCharOffset
       fetchToken()
+      if token == END && !isEndMarker then token = IDENTIFIER
     }
 
     def reset() = {
@@ -652,10 +659,10 @@ object Scanners {
                  && (token == RPAREN || token == RBRACKET || token == RBRACE || token == OUTDENT)
               then
                 () /* skip the trailing comma */
-              else if token == EOF then // e.g. when the REPL is parsing "val List(x, y, _*,"
-                () /* skip the trailing comma */
               else
                 reset()
+        case END =>
+          if !isEndMarker then token = IDENTIFIER
         case COLON =>
           if fewerBracesEnabled then observeColonEOL()
         case RBRACE | RPAREN | RBRACKET =>
@@ -665,6 +672,21 @@ object Scanners {
         case _ =>
       }
     }
+
+    protected def isEndMarker: Boolean =
+      if indentSyntax && isAfterLineEnd then
+        val endLine = source.offsetToLine(offset)
+        val lookahead = new LookaheadScanner():
+          override def isEndMarker = false
+        lookahead.nextToken()
+        if endMarkerTokens.contains(lookahead.token)
+          && source.offsetToLine(lookahead.offset) == endLine
+        then
+          lookahead.nextToken()
+          if lookahead.token == EOF
+          || source.offsetToLine(lookahead.offset) > endLine
+          then return true
+      false
 
     /** Is there a blank line between the current token and the last one?
      *  A blank line consists only of characters <= ' '.
@@ -975,7 +997,7 @@ object Scanners {
       getLitChars('`')
       if (ch == '`') {
         nextChar()
-        finishNamed(BACKQUOTED_IDENT)
+        finishNamedToken(BACKQUOTED_IDENT, target = this)
         if (name.length == 0)
           error("empty quoted identifier")
         else if (name == nme.WILDCARD)
@@ -1141,10 +1163,12 @@ object Scanners {
             nextRawChar()
             ch != SU && Character.isUnicodeIdentifierPart(ch)
           do ()
-          finishNamed(target = next)
+          finishNamedToken(IDENTIFIER, target = next)
         }
         else
-          error("invalid string interpolation: `$$`, `$\"`, `$`ident or `$`BlockExpr expected")
+          error("invalid string interpolation: `$$`, `$\"`, `$`ident or `$`BlockExpr expected", off = charOffset - 2)
+          putChar('$')
+          getStringPart(multiLine)
       }
       else {
         val isUnclosedLiteral = !isUnicodeEscape && (ch == SU || (!multiLine && (ch == CR || ch == LF)))
@@ -1227,7 +1251,7 @@ object Scanners {
               nextChar()
             }
           }
-          val alt = if oct == LF then raw"\n" else f"\u$oct%04x"
+          val alt = if oct == LF then raw"\n" else f"${"\\"}u$oct%04x"
           error(s"octal escape literals are unsupported: use $alt instead", start)
           putChar(oct.toChar)
         }

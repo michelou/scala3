@@ -23,6 +23,8 @@ abstract class Positioned(implicit @constructorOnly src: SourceFile) extends Src
 
   private var mySpan: Span = _
 
+  private var mySource: SourceFile = src
+
   /** A unique identifier in case -Yshow-tree-ids, or -Ydebug-tree-with-id
    *  is set, -1 otherwise.
    */
@@ -36,7 +38,7 @@ abstract class Positioned(implicit @constructorOnly src: SourceFile) extends Src
       ids.put(this, ownId)
       if ownId == debugId then
         println(s"Debug tree (id=$debugId) creation \n$this\n")
-        Reporter.displayPrompt(Console.in, new PrintWriter(Console.err, true))
+        Thread.dumpStack()
 
   allocateId()
 
@@ -48,7 +50,8 @@ abstract class Positioned(implicit @constructorOnly src: SourceFile) extends Src
 
   span = envelope(src)
 
-  val source: SourceFile = src
+  def source: SourceFile = mySource
+
   def sourcePos(using Context): SourcePosition = source.atSpan(span)
 
   /** This positioned item, widened to `SrcPos`. Used to make clear we only need the
@@ -65,12 +68,11 @@ abstract class Positioned(implicit @constructorOnly src: SourceFile) extends Src
     if (span == mySpan) this
     else {
       val newpd: this.type =
-        if (mySpan.isSynthetic) {
-          if (!mySpan.exists && span.exists)
-            envelope(source, span.startPos) // fill in children spans
+        if !mySpan.exists then
+          if span.exists then envelope(source, span.startPos) // fill in children spans
           this
-        }
-        else cloneIn(source)
+        else
+          cloneIn(source)
       newpd.span = span
       newpd
     }
@@ -128,7 +130,7 @@ abstract class Positioned(implicit @constructorOnly src: SourceFile) extends Src
   def cloneIn(src: SourceFile): this.type = {
     val newpd: this.type = clone.asInstanceOf[this.type]
     newpd.allocateId()
-    // assert(newpd.uniqueId != 2208, s"source = $this, ${this.uniqueId}, ${this.span}")
+    newpd.mySource = src
     newpd
   }
 

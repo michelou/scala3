@@ -9,6 +9,11 @@ import ast.untpd
 import collection.{mutable, immutable}
 import util.Spans.Span
 import util.SrcPos
+import ContextFunctionResults.{contextResultCount, contextFunctionResultTypeAfter}
+import StdNames.nme
+import Constants.Constant
+import TypeErasure.transformInfo
+import Erasure.Boxing.adaptClosure
 
 /** A helper class for generating bridge methods in class `root`. */
 class Bridges(root: ClassSymbol, thisPhase: DenotTransformer)(using Context) {
@@ -34,9 +39,12 @@ class Bridges(root: ClassSymbol, thisPhase: DenotTransformer)(using Context) {
 
     override def exclude(sym: Symbol) =
       !sym.isOneOf(MethodOrModule) || super.exclude(sym)
+
+    override def canBeHandledByParent(sym1: Symbol, sym2: Symbol, parent: Symbol): Boolean =
+      OverridingPairs.isOverridingPair(sym1, sym2, parent.thisType)
   }
 
-  //val site = root.thisType
+  val site = root.thisType
 
   private var toBeRemoved = immutable.Set[Symbol]()
   private val bridges = mutable.ListBuffer[Tree]()
@@ -77,7 +85,13 @@ class Bridges(root: ClassSymbol, thisPhase: DenotTransformer)(using Context) {
                       |clashes with definition of the member itself; both have erased type ${info(member)(using elimErasedCtx)}."""",
                   bridgePosFor(member))
     }
-    else if (!bridgeExists)
+    else if !inContext(preErasureCtx)(site.memberInfo(member).matches(site.memberInfo(other))) then
+      // Neither symbol signatures nor pre-erasure types seen from root match; this means
+      // according to Scala 2 semantics there is no override.
+      // A bridge might introduce a classcast exception.
+      // Example where this was observed: run/i12828a.scala and MapView in stdlib213
+      report.log(i"suppress bridge in $root for ${member} in ${member.owner} and ${other.showLocated} since member infos ${site.memberInfo(member)} and ${site.memberInfo(other)} do not match")
+    else if !bridgeExists then
       addBridge(member, other)
   }
 
@@ -103,12 +117,52 @@ class Bridges(root: ClassSymbol, thisPhase: DenotTransformer)(using Context) {
       toBeRemoved += other
     }
 
-    def bridgeRhs(argss: List[List[Tree]]) = {
+    val memberCount = contextResultCount(member)
+
+    /** Eta expand application `ref(args)` as needed.
+     *  To do this correctly, we have to look at the member's original pre-erasure
+     *  type and figure out which context function types in its result are
+     *  not yet instantiated.
+     */
+    def etaExpand(ref: Tree, args: List[Tree])(using Context): Tree =
+      def expand(args: List[Tree], tp: Type, n: Int)(using Context): Tree =
+        if n <= 0 then
+          assert(ctx.typer.isInstanceOf[Erasure.Typer])
+          ctx.typer.typed(untpd.cpy.Apply(ref)(ref, args), member.info.finalResultType)
+        else
+          val defn.ContextFunctionType(argTypes, resType, isErased) = tp: @unchecked
+          val anonFun = newAnonFun(ctx.owner,
+            MethodType(if isErased then Nil else argTypes, resType),
+            coord = ctx.owner.coord)
+          anonFun.info = transformInfo(anonFun, anonFun.info)
+
+          def lambdaBody(refss: List[List[Tree]]) =
+            val refs :: Nil = refss: @unchecked
+            val expandedRefs = refs.map(_.withSpan(ctx.owner.span.endPos)) match
+              case (bunchedParam @ Ident(nme.ALLARGS)) :: Nil =>
+                argTypes.indices.toList.map(n =>
+                  bunchedParam
+                    .select(nme.primitive.arrayApply)
+                    .appliedTo(Literal(Constant(n))))
+              case refs1 => refs1
+            expand(args ::: expandedRefs, resType, n - 1)(using ctx.withOwner(anonFun))
+
+          val unadapted = Closure(anonFun, lambdaBody)
+          cpy.Block(unadapted)(unadapted.stats,
+            adaptClosure(unadapted.expr.asInstanceOf[Closure]))
+      end expand
+
+      val otherCount = contextResultCount(other)
+      val start = contextFunctionResultTypeAfter(member, otherCount)(using preErasureCtx)
+      expand(args, start, memberCount - otherCount)(using ctx.withOwner(bridge))
+    end etaExpand
+
+    def bridgeRhs(argss: List[List[Tree]]) =
       assert(argss.tail.isEmpty)
       val ref = This(root).select(member)
-      if (member.info.isParameterless) ref // can happen if `member` is a module
-      else Erasure.partialApply(ref, argss.head)
-    }
+      if member.info.isParameterless then ref // can happen if `member` is a module
+      else if memberCount == 0 then ref.appliedToTermArgs(argss.head)
+      else etaExpand(ref, argss.head)
 
     bridges += DefDef(bridge, bridgeRhs(_).withSpan(bridge.span))
   }

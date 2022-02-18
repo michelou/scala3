@@ -104,7 +104,7 @@ object DesugarEnums {
 
   /**  The following lists of definitions for an enum type E and known value cases e_0, ..., e_n:
    *
-   *   private val $values = Array[E](this.e_0,...,this.e_n)(ClassTag[E](classOf[E])): @unchecked
+   *   private val $values = Array[E](this.e_0,...,this.e_n)(ClassTag[E](classOf[E]))
    *   def values = $values.clone
    *   def valueOf($name: String) = $name match {
    *     case "e_0" => this.e_0
@@ -118,15 +118,7 @@ object DesugarEnums {
     extension (tpe: NamedType) def ofRawEnum = AppliedTypeTree(ref(tpe), rawEnumClassRef)
 
     val privateValuesDef =
-      val uncheckedValues =
-        // Here we use an unchecked annotation to silence warnings from the init checker. Without it, we get a warning
-        // that simple enum cases are promoting this from warm to initialised. This is because we are populating the
-        // array by selecting enum values from `this`, a value under construction.
-        // Singleton enum values always construct a new anonymous class, which will not be checked by the init-checker,
-        // so this warning will always persist even if the implementation of the anonymous class is safe.
-        // TODO: remove @unchecked after https://github.com/lampepfl/dotty-feature-requests/issues/135 is resolved.
-        Annotated(ArrayLiteral(enumValues, rawEnumClassRef), New(ref(defn.UncheckedAnnot.typeRef), Nil))
-      ValDef(nme.DOLLAR_VALUES, TypeTree(), uncheckedValues)
+      ValDef(nme.DOLLAR_VALUES, TypeTree(), ArrayLiteral(enumValues, rawEnumClassRef))
         .withFlags(Private | Synthetic)
 
     val valuesDef =
@@ -187,13 +179,12 @@ object DesugarEnums {
    *   }
    */
   private def enumValueCreator(using Context) = {
-    val fieldMethods = if isJavaEnum then Nil else ordinalMeth(Ident(nme.ordinalDollar_)) :: Nil
     val creator = New(Template(
       constr = emptyConstructor,
       parents = enumClassRef :: scalaRuntimeDot(tpnme.EnumValue) :: Nil,
       derived = Nil,
       self = EmptyValDef,
-      body = fieldMethods
+      body = Nil
     ).withAttachment(ExtendsSingletonMirror, ()))
     DefDef(nme.DOLLAR_NEW,
         List(List(param(nme.ordinalDollar_, defn.IntType), param(nme.nameDollar, defn.StringType))),
@@ -278,8 +269,6 @@ object DesugarEnums {
   def param(name: TermName, typ: Type)(using Context): ValDef = param(name, TypeTree(typ))
   def param(name: TermName, tpt: Tree)(using Context): ValDef = ValDef(name, tpt, EmptyTree).withFlags(Param)
 
-  private def isJavaEnum(using Context): Boolean = enumClass.derivesFrom(defn.JavaEnumClass)
-
   def ordinalMeth(body: Tree)(using Context): DefDef =
     DefDef(nme.ordinal, Nil, TypeTree(defn.IntType), body).withAddedFlags(Synthetic)
 
@@ -298,10 +287,8 @@ object DesugarEnums {
       expandSimpleEnumCase(name, mods, definesLookups, span)
     else {
       val (tag, scaffolding) = nextOrdinal(name, CaseKind.Object, definesLookups)
-      val impl1 = cpy.Template(impl)(
-        parents = impl.parents :+ scalaRuntimeDot(tpnme.EnumValue),
-        body = if isJavaEnum then Nil else ordinalMethLit(tag) :: Nil
-      ).withAttachment(ExtendsSingletonMirror, ())
+      val impl1 = cpy.Template(impl)(parents = impl.parents :+ scalaRuntimeDot(tpnme.EnumValue), body = Nil)
+        .withAttachment(ExtendsSingletonMirror, ())
       val vdef = ValDef(name, TypeTree(), New(impl1)).withMods(mods.withAddedFlags(EnumValue, span))
       flatTree(vdef :: scaffolding).withSpan(span)
     }

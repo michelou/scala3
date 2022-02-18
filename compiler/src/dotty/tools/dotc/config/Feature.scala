@@ -27,6 +27,7 @@ object Feature:
   val erasedDefinitions = experimental("erasedDefinitions")
   val symbolLiterals = deprecated("symbolLiterals")
   val fewerBraces = experimental("fewerBraces")
+  val saferExceptions = experimental("saferExceptions")
 
   /** Is `feature` enabled by by a command-line setting? The enabling setting is
    *
@@ -90,29 +91,35 @@ object Feature:
   def warnOnMigration(msg: Message, pos: SrcPos,
       version: SourceVersion = defaultSourceVersion)(using Context): Boolean =
     if sourceVersion.isMigrating && sourceVersion.stable == version
-       || version == `3.0` && migrateTo3
+       || (version == `3.0` || version == `3.1`) && migrateTo3
     then
       report.migrationWarning(msg, pos)
       true
     else
       false
 
-  private val assumeExperimentalIn = Set("dotty.tools.vulpix.ParallelTesting")
+  def checkExperimentalFeature(which: String, srcPos: SrcPos, note: => String = "")(using Context) =
+    if !isExperimentalEnabled then
+      report.error(i"Experimental $which may only be used with a nightly or snapshot version of the compiler$note", srcPos)
 
-  def checkExperimentalFeature(which: String, srcPos: SrcPos = NoSourcePosition)(using Context) =
-    def hasSpecialPermission =
-      new Exception().getStackTrace.exists(elem =>
-        assumeExperimentalIn.exists(elem.getClassName().startsWith(_)))
-    if !(Properties.experimental || hasSpecialPermission)
-       || ctx.settings.YnoExperimental.value
-    then
-      //println(i"${new Exception().getStackTrace.map(_.getClassName).toList}%\n%")
-      report.error(i"Experimental feature$which may only be used with nightly or snapshot version of compiler", srcPos)
+  def checkExperimentalDef(sym: Symbol, srcPos: SrcPos)(using Context) =
+    if !isExperimentalEnabled then
+      val symMsg =
+        if sym.hasAnnotation(defn.ExperimentalAnnot) then
+          i"$sym is marked @experimental"
+        else if sym.owner.hasAnnotation(defn.ExperimentalAnnot) then
+          i"${sym.owner} is marked @experimental"
+        else
+          i"$sym inherits @experimental"
+      report.error(s"$symMsg and therefore may only be used in an experimental scope.", srcPos)
 
   /** Check that experimental compiler options are only set for snapshot or nightly compiler versions. */
   def checkExperimentalSettings(using Context): Unit =
     for setting <- ctx.settings.language.value
         if setting.startsWith("experimental.") && setting != "experimental.macros"
-    do checkExperimentalFeature(s" $setting")
+    do checkExperimentalFeature(s"feature $setting", NoSourcePosition)
+
+  def isExperimentalEnabled(using Context): Boolean =
+    Properties.experimental && !ctx.settings.YnoExperimental.value
 
 end Feature

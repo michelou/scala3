@@ -37,11 +37,12 @@ class CompilationTests {
       compileFilesInDir("tests/pos-special/spec-t5545", defaultOptions),
       compileFilesInDir("tests/pos-special/strawman-collections", allowDeepSubtypes),
       compileFilesInDir("tests/pos-special/isInstanceOf", allowDeepSubtypes.and("-Xfatal-warnings")),
-      compileFilesInDir("tests/new", defaultOptions),
+      compileFilesInDir("tests/new", defaultOptions.and("-source", "3.1")), // just to see whether 3.1 works
       compileFilesInDir("tests/pos-scala2", scala2CompatMode),
       compileFilesInDir("tests/pos-custom-args/erased", defaultOptions.and("-language:experimental.erasedDefinitions")),
       compileFilesInDir("tests/pos", defaultOptions.and("-Ysafe-init")),
       compileFilesInDir("tests/pos-deep-subtype", allowDeepSubtypes),
+      compileFilesInDir("tests/pos-custom-args/no-experimental", defaultOptions.and("-Yno-experimental")),
       compileDir("tests/pos-special/java-param-names", defaultOptions.withJavacOnlyOptions("-parameters")),
       compileFile(
         // succeeds despite -Xfatal-warnings because of -nowarn
@@ -54,11 +55,16 @@ class CompilationTests {
       compileDir("tests/pos-special/adhoc-extension", defaultOptions.and("-source", "future", "-feature", "-Xfatal-warnings")),
       compileFile("tests/pos-special/i7575.scala", defaultOptions.andLanguageFeature("dynamics")),
       compileFile("tests/pos-special/kind-projector.scala", defaultOptions.and("-Ykind-projector")),
+      compileFile("tests/pos-special/kind-projector-underscores.scala", defaultOptions.and("-Ykind-projector:underscores")),
       compileFile("tests/run/i5606.scala", defaultOptions.and("-Yretain-trees")),
       compileFile("tests/pos-custom-args/i5498-postfixOps.scala", defaultOptions withoutLanguageFeature "postfixOps"),
       compileFile("tests/pos-custom-args/i8875.scala", defaultOptions.and("-Xprint:getters")),
       compileFile("tests/pos-custom-args/i9267.scala", defaultOptions.and("-Ystop-after:erasure")),
       compileFile("tests/pos-special/extend-java-enum.scala", defaultOptions.and("-source", "3.0-migration")),
+      compileFile("tests/pos-custom-args/help.scala", defaultOptions.and("-help", "-V", "-W", "-X", "-Y")),
+      compileFile("tests/pos-custom-args/i10383.scala", defaultOptions.and("-source", "future", "-deprecation", "-Xfatal-warnings")),
+      compileFile("tests/pos-custom-args/i13044.scala", defaultOptions.and("-Xmax-inlines:33")),
+      compileFile("tests/pos-custom-args/jdk-8-app.scala", defaultOptions.and("-release:8")),
     ).checkCompile()
   }
 
@@ -70,7 +76,8 @@ class CompilationTests {
       compileFile("tests/rewrites/rewrites3x.scala", defaultOptions.and("-rewrite", "-source", "future-migration")),
       compileFile("tests/rewrites/i8982.scala", defaultOptions.and("-indent", "-rewrite")),
       compileFile("tests/rewrites/i9632.scala", defaultOptions.and("-indent", "-rewrite")),
-      compileFile("tests/rewrites/i11895.scala", defaultOptions.and("-indent", "-rewrite"))
+      compileFile("tests/rewrites/i11895.scala", defaultOptions.and("-indent", "-rewrite")),
+      compileFile("tests/rewrites/i12340.scala", unindentOptions.and("-rewrite")),
     ).checkRewrites()
   }
 
@@ -126,12 +133,14 @@ class CompilationTests {
       compileFilesInDir("tests/neg-no-kind-polymorphism", defaultOptions and "-Yno-kind-polymorphism"),
       compileFilesInDir("tests/neg-custom-args/deprecation", defaultOptions.and("-Xfatal-warnings", "-deprecation")),
       compileFilesInDir("tests/neg-custom-args/fatal-warnings", defaultOptions.and("-Xfatal-warnings")),
+      compileFilesInDir("tests/neg-custom-args/nowarn", defaultOptions.and("-deprecation", "-Wunused:nowarn", "-Wconf:msg=@nowarn annotation does not suppress any warnings:e")),
       compileFilesInDir("tests/neg-custom-args/erased", defaultOptions.and("-language:experimental.erasedDefinitions")),
       compileFilesInDir("tests/neg-custom-args/allow-double-bindings", allowDoubleBindings),
       compileFilesInDir("tests/neg-custom-args/allow-deep-subtypes", allowDeepSubtypes),
       compileFilesInDir("tests/neg-custom-args/explicit-nulls", defaultOptions.and("-Yexplicit-nulls")),
       compileFilesInDir("tests/neg-custom-args/no-experimental", defaultOptions.and("-Yno-experimental")),
       compileDir("tests/neg-custom-args/impl-conv", defaultOptions.and("-Xfatal-warnings", "-feature")),
+      compileDir("tests/neg-custom-args/i13946", defaultOptions.and("-Xfatal-warnings", "-feature")),
       compileFile("tests/neg-custom-args/implicit-conversions.scala", defaultOptions.and("-Xfatal-warnings", "-feature")),
       compileFile("tests/neg-custom-args/implicit-conversions-old.scala", defaultOptions.and("-Xfatal-warnings", "-feature")),
       compileFile("tests/neg-custom-args/i3246.scala", scala2CompatMode),
@@ -146,6 +155,7 @@ class CompilationTests {
       compileFile("tests/neg-custom-args/i3882.scala", allowDeepSubtypes),
       compileFile("tests/neg-custom-args/i4372.scala", allowDeepSubtypes),
       compileFile("tests/neg-custom-args/i1754.scala", allowDeepSubtypes),
+      compileFile("tests/neg-custom-args/i12650.scala", allowDeepSubtypes),
       compileFile("tests/neg-custom-args/i9517.scala", defaultOptions.and("-Xprint-types")),
       compileFile("tests/neg-custom-args/i11637.scala", defaultOptions.and("-explain")),
       compileFile("tests/neg-custom-args/interop-polytypes.scala", allowDeepSubtypes.and("-Yexplicit-nulls")),
@@ -166,12 +176,17 @@ class CompilationTests {
       compileDir("tests/neg-custom-args/adhoc-extension", defaultOptions.and("-source", "future", "-feature", "-Xfatal-warnings")),
       compileFile("tests/neg/i7575.scala", defaultOptions.withoutLanguageFeatures.and("-language:_")),
       compileFile("tests/neg-custom-args/kind-projector.scala", defaultOptions.and("-Ykind-projector")),
+      compileFile("tests/neg-custom-args/kind-projector-underscores.scala", defaultOptions.and("-Ykind-projector:underscores")),
       compileFile("tests/neg-custom-args/typeclass-derivation2.scala", defaultOptions.and("-language:experimental.erasedDefinitions")),
       compileFile("tests/neg-custom-args/i5498-postfixOps.scala", defaultOptions withoutLanguageFeature "postfixOps"),
       compileFile("tests/neg-custom-args/deptypes.scala", defaultOptions.and("-language:experimental.dependent")),
       compileFile("tests/neg-custom-args/matchable.scala", defaultOptions.and("-Xfatal-warnings", "-source", "future")),
       compileFile("tests/neg-custom-args/i7314.scala", defaultOptions.and("-Xfatal-warnings", "-source", "future")),
       compileFile("tests/neg-custom-args/feature-shadowing.scala", defaultOptions.and("-Xfatal-warnings", "-feature")),
+      compileDir("tests/neg-custom-args/hidden-type-errors", defaultOptions.and("-explain")),
+      compileFile("tests/neg-custom-args/i13026.scala", defaultOptions.and("-print-lines")),
+      compileFile("tests/neg-custom-args/i13838.scala", defaultOptions.and("-Ximplicit-search-limit", "1000")),
+      compileFile("tests/neg-custom-args/jdk-9-app.scala", defaultOptions.and("-release:8")),
     ).checkExpectedErrors()
   }
 
@@ -191,6 +206,9 @@ class CompilationTests {
       compileFile("tests/run-custom-args/no-useless-forwarders.scala", defaultOptions and "-Xmixin-force-forwarders:false"),
       compileFile("tests/run-custom-args/defaults-serizaliable-no-forwarders.scala", defaultOptions and "-Xmixin-force-forwarders:false"),
       compileFilesInDir("tests/run-custom-args/erased", defaultOptions.and("-language:experimental.erasedDefinitions")),
+      compileFilesInDir("tests/run-custom-args/fatal-warnings", defaultOptions.and("-Xfatal-warnings")),
+      compileDir("tests/run-custom-args/Xmacro-settings/simple", defaultOptions.and("-Xmacro-settings:one,two,three")),
+      compileDir("tests/run-custom-args/Xmacro-settings/compileTimeEnv", defaultOptions.and("-Xmacro-settings:a,b=1,c.b.a=x.y.z=1,myLogger.level=INFO")),
       compileFilesInDir("tests/run-deep-subtype", allowDeepSubtypes),
       compileFilesInDir("tests/run", defaultOptions.and("-Ysafe-init"))
     ).checkRuns()
@@ -212,84 +230,6 @@ class CompilationTests {
       compileFilesInDir("tests/pos", picklingOptions, FileFilter.exclude(TestSources.posTestPicklingBlacklisted)),
       compileFilesInDir("tests/run", picklingOptions, FileFilter.exclude(TestSources.runTestPicklingBlacklisted))
     ).checkCompile()
-  }
-
-  /** The purpose of this test is three-fold, being able to compile dotty
-   *  bootstrapped, and making sure that TASTY can link against a compiled
-   *  version of Dotty, and compiling the compiler using the SemanticDB generation
-   */
-  @Test def tastyBootstrap: Unit = {
-    implicit val testGroup: TestGroup = TestGroup("tastyBootstrap/tests")
-    val libGroup = TestGroup("tastyBootstrap/lib")
-    val tastyCoreGroup = TestGroup("tastyBootstrap/tastyCore")
-    val dotty1Group = TestGroup("tastyBootstrap/dotty1")
-    val dotty2Group = TestGroup("tastyBootstrap/dotty2")
-
-    // Make sure that the directory is clean
-    dotty.tools.io.Directory(defaultOutputDir + "tastyBootstrap").deleteRecursively()
-
-    val opt = TestFlags(
-      List(
-        // compile with bootstrapped library on cp:
-        defaultOutputDir + libGroup + "/lib/",
-        // and bootstrapped tasty-core:
-        defaultOutputDir + tastyCoreGroup + "/tastyCore/",
-        // as well as bootstrapped compiler:
-        defaultOutputDir + dotty1Group + "/dotty1/",
-        // and the other compiler dependencies:
-        Properties.compilerInterface, Properties.scalaLibrary, Properties.scalaAsm,
-        Properties.dottyInterfaces, Properties.jlineTerminal, Properties.jlineReader,
-      ).mkString(File.pathSeparator),
-      Array("-Ycheck-reentrant", "-language:postfixOps", "-Xsemanticdb", "-Yno-experimental")
-    )
-
-    val libraryDirs = List(Paths.get("library/src"), Paths.get("library/src-bootstrapped"))
-    val librarySources = libraryDirs.flatMap(sources(_))
-
-    val lib =
-      compileList("lib", librarySources,
-        defaultOptions.and("-Ycheck-reentrant",
-          "-language:experimental.erasedDefinitions", // support declaration of scala.compiletime.erasedValue
-          //  "-source", "future",  // TODO: re-enable once we allow : @unchecked in pattern definitions. Right now, lots of narrowing pattern definitions fail.
-          ))(libGroup)
-
-    val tastyCoreSources = sources(Paths.get("tasty/src"))
-    val tastyCore = compileList("tastyCore", tastyCoreSources, opt)(tastyCoreGroup)
-
-    val compilerSources = sources(Paths.get("compiler/src")) ++ sources(Paths.get("compiler/src-bootstrapped"))
-    val compilerManagedSources = sources(Properties.dottyCompilerManagedSources)
-
-    val dotty1 = compileList("dotty1", compilerSources ++ compilerManagedSources, opt)(dotty1Group)
-    val dotty2 = compileList("dotty2", compilerSources ++ compilerManagedSources, opt)(dotty2Group)
-
-    val tests = {
-      lib.keepOutput :: tastyCore.keepOutput :: dotty1.keepOutput :: aggregateTests(
-        dotty2,
-        compileShallowFilesInDir("compiler/src/dotty/tools", opt),
-        compileShallowFilesInDir("compiler/src/dotty/tools/dotc", opt),
-        compileShallowFilesInDir("compiler/src/dotty/tools/dotc/ast", opt),
-        compileShallowFilesInDir("compiler/src/dotty/tools/dotc/config", opt),
-        compileShallowFilesInDir("compiler/src/dotty/tools/dotc/parsing", opt),
-        compileShallowFilesInDir("compiler/src/dotty/tools/dotc/printing", opt),
-        compileShallowFilesInDir("compiler/src/dotty/tools/dotc/reporting", opt),
-        compileShallowFilesInDir("compiler/src/dotty/tools/dotc/rewrites", opt),
-        compileShallowFilesInDir("compiler/src/dotty/tools/dotc/transform", opt),
-        compileShallowFilesInDir("compiler/src/dotty/tools/dotc/typer", opt),
-        compileShallowFilesInDir("compiler/src/dotty/tools/dotc/util", opt),
-        compileShallowFilesInDir("compiler/src/dotty/tools/backend", opt),
-        compileShallowFilesInDir("compiler/src/dotty/tools/backend/jvm", opt),
-        compileList("managed-sources", compilerManagedSources, opt)
-      ).keepOutput :: Nil
-    }.map(_.checkCompile())
-
-    def assertExists(path: String) = assertTrue(Files.exists(Paths.get(path)))
-    assertExists(s"out/$libGroup/lib/")
-    assertExists(s"out/$tastyCoreGroup/tastyCore/")
-    assertExists(s"out/$dotty1Group/dotty1/")
-    assertExists(s"out/$dotty2Group/dotty2/")
-    compileList("idempotency", List("tests/idempotency/BootstrapChecker.scala", "tests/idempotency/IdempotencyCheck.scala"), defaultOptions).checkRuns()
-
-    tests.foreach(_.delete())
   }
 
   // Explicit nulls tests
@@ -323,6 +263,27 @@ class CompilationTests {
     compileFilesInDir("tests/init/neg", options).checkExpectedErrors()
     compileFilesInDir("tests/init/pos", options).checkCompile()
     compileFilesInDir("tests/init/crash", options.without("-Xfatal-warnings")).checkCompile()
+
+    // The regression test for i12128 has some atypical classpath requirements.
+    // The test consists of three files: (a) Reflect_1  (b) Macro_2  (c) Test_3
+    // which must be compiled separately. In addition:
+    //   - the output from (a) must be on the classpath while compiling (b)
+    //   - the output from (b) must be on the classpath while compiling (c)
+    //   - the output from (a) _must not_ be on the classpath while compiling (c)
+    locally {
+      val i12128Group = TestGroup("checkInit/i12128")
+      val i12128Options = options.without("-Xfatal-warnings")
+      val outDir1 = defaultOutputDir + i12128Group + "/Reflect_1/i12128/Reflect_1"
+      val outDir2 = defaultOutputDir + i12128Group + "/Macro_2/i12128/Macro_2"
+
+      val tests = List(
+        compileFile("tests/init/special/i12128/Reflect_1.scala", i12128Options)(i12128Group),
+        compileFile("tests/init/special/i12128/Macro_2.scala", i12128Options.withClasspath(outDir1))(i12128Group),
+        compileFile("tests/init/special/i12128/Test_3.scala", options.withClasspath(outDir2))(i12128Group)
+      ).map(_.keepOutput.checkCompile())
+
+      tests.foreach(_.delete())
+    }
   }
 }
 

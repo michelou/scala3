@@ -81,21 +81,14 @@ object GenericSignatures {
       val (repr :: _, others) = splitIntersection(bounds)
       builder.append(':')
 
-      // According to the Java spec
-      // (https://docs.oracle.com/javase/specs/jls/se8/html/jls-4.html#jls-4.4),
-      // intersections erase to their first member and must start with a class.
-      // So, if our intersection erases to a trait, in theory we should emit
-      // just that trait in the generic signature even if the intersection type
-      // is composed of multiple traits. But in practice Scala 2 has always
-      // ignored this restriction as intersections of traits seem to be handled
-      // correctly by javac, we do the same here since type soundness seems
-      // more important than adhering to the spec.
+      // In Java, intersections always erase to their first member, so put
+      // whatever parent erases to the Scala intersection erasure first in the
+      // signature.
       if repr.classSymbol.is(Trait) then
+        // An initial ':' is needed if the intersection starts with an interface
+        // (cf https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-4.html#jvms-TypeParameter)
         builder.append(':')
-        boxedSig(repr)
-        // If we wanted to be compliant with the spec, we would `return` here.
-      else
-        boxedSig(repr)
+      boxedSig(repr)
       others.filter(_.classSymbol.is(Trait)).foreach { tp =>
         builder.append(':')
         boxedSig(tp)
@@ -131,10 +124,10 @@ object GenericSignatures {
      */
     def splitIntersection(parents: List[Type])(using Context): (List[Type], List[Type]) =
       val erasedParents = parents.map(erasure)
-      val erasedCls = erasedGlb(erasedParents).classSymbol
+      val erasedTp = erasedGlb(erasedParents)
       parents.zip(erasedParents)
         .partitionMap((parent, erasedParent) =>
-          if erasedParent.classSymbol eq erasedCls then
+          if erasedParent =:= erasedTp then
             Left(parent)
           else
             Right(parent))
@@ -281,10 +274,10 @@ object GenericSignatures {
               jsig(erasedUnderlying, toplevel, primitiveOK)
           }
           else if (defn.isSyntheticFunctionClass(sym)) {
-            val erasedSym = defn.erasedFunctionClass(sym)
+            val erasedSym = defn.functionTypeErasure(sym).typeSymbol
             classSig(erasedSym, pre, if (erasedSym.typeParams.isEmpty) Nil else args)
           }
-          else if (sym.isClass)
+          else if sym.isClass then
             classSig(sym, pre, args)
           else
             jsig(erasure(tp), toplevel, primitiveOK)
@@ -298,7 +291,7 @@ object GenericSignatures {
 
         case PolyType(tparams, mtpe: MethodType) =>
           assert(tparams.nonEmpty)
-          if (toplevel) polyParamSig(tparams)
+          if (toplevel && !sym0.isConstructor) polyParamSig(tparams)
           jsig(mtpe)
 
         // Nullary polymorphic method
@@ -462,7 +455,7 @@ object GenericSignatures {
   private class NeedsSigCollector(using Context) extends TypeAccumulator[Boolean] {
     override def apply(x: Boolean, tp: Type): Boolean =
       if (!x)
-        tp match {
+        tp.dealias match {
           case RefinedType(parent, refinedName, refinedInfo) =>
             val sym = parent.typeSymbol
             if (sym == defn.ArrayClass) foldOver(x, refinedInfo)
@@ -478,9 +471,9 @@ object GenericSignatures {
             foldOver(tp.typeParams.nonEmpty, parents)
           case AnnotatedType(tpe, _) =>
             foldOver(x, tpe)
-          case proxy: TypeProxy =>
-            foldOver(x, proxy)
-          case _ =>
+          case ExprType(tpe) =>
+            true
+          case tp =>
             foldOver(x, tp)
         }
       else x

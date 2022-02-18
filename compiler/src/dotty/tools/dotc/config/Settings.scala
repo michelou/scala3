@@ -11,7 +11,7 @@ import language.existentials
 import reflect.ClassTag
 import scala.util.{Success, Failure}
 
-object Settings {
+object Settings:
 
   val BooleanTag: ClassTag[Boolean]      = ClassTag.Boolean
   val IntTag: ClassTag[Int]              = ClassTag.Int
@@ -21,25 +21,22 @@ object Settings {
   val OptionTag: ClassTag[Option[?]]     = ClassTag(classOf[Option[?]])
   val OutputTag: ClassTag[AbstractFile]  = ClassTag(classOf[AbstractFile])
 
-  class SettingsState(initialValues: Seq[Any]) {
+  class SettingsState(initialValues: Seq[Any]):
     private val values = ArrayBuffer(initialValues: _*)
     private var _wasRead: Boolean = false
 
     override def toString: String = s"SettingsState(values: ${values.toList})"
 
-    def value(idx: Int): Any = {
+    def value(idx: Int): Any =
       _wasRead = true
       values(idx)
-    }
 
     def update(idx: Int, x: Any): SettingsState =
-      if (_wasRead)
-        new SettingsState(values.toSeq).update(idx, x)
-      else {
+      if (_wasRead) then SettingsState(values.toSeq).update(idx, x)
+      else
         values(idx) = x
         this
-      }
-  }
+  end SettingsState
 
   case class ArgsSummary(
     sstate: SettingsState,
@@ -59,7 +56,7 @@ object Settings {
     description: String,
     default: T,
     helpArg: String = "",
-    choices: Option[Seq[T]] = None,
+    choices: Option[Seq[?]] = None,
     prefix: String = "",
     aliases: List[String] = Nil,
     depends: List[(Setting[?], Any)] = Nil,
@@ -67,18 +64,11 @@ object Settings {
 
     private var changed: Boolean = false
 
-    def valueIn(state: SettingsState): T =
-      state.value(idx).asInstanceOf[T]
+    def valueIn(state: SettingsState): T = state.value(idx).asInstanceOf[T]
 
-    def updateIn(state: SettingsState, x: Any): SettingsState = x match {
+    def updateIn(state: SettingsState, x: Any): SettingsState = x match
       case _: T => state.update(idx, x)
-      case _ =>
-        // would like to do:
-        // throw new ClassCastException(s"illegal argument, found: $x of type ${x.getClass}, required: ${implicitly[ClassTag[T]]}")
-        // but this runs afoul of primitive types. Concretely: if T is Boolean, then x is a boxed Boolean and the test will fail.
-        // Maybe this is a bug in Scala 2.10?
-        state.update(idx, x.asInstanceOf[T])
-    }
+      case _ => throw IllegalArgumentException(s"found: $x of type ${x.getClass.getName}, required: ${implicitly[ClassTag[T]]}")
 
     def isDefaultIn(state: SettingsState): Boolean = valueIn(state) == default
 
@@ -94,7 +84,7 @@ object Settings {
 
     def tryToSet(state: ArgsSummary): ArgsSummary = {
       val ArgsSummary(sstate, arg :: args, errors, warnings) = state
-      def update(value: Any, args: List[String]) =
+      def update(value: Any, args: List[String]): ArgsSummary =
         var dangers = warnings
         val value1 =
           if changed && isMultivalue then
@@ -107,16 +97,34 @@ object Settings {
             value
         changed = true
         ArgsSummary(updateIn(sstate, value1), args, errors, dangers)
+      end update
+
       def fail(msg: String, args: List[String]) =
         ArgsSummary(sstate, args, errors :+ msg, warnings)
+
       def missingArg =
         fail(s"missing argument for option $name", args)
+
       def setString(argValue: String, args: List[String]) =
         choices match
           case Some(xs) if !xs.contains(argValue) =>
             fail(s"$argValue is not a valid choice for $name", args)
           case _ =>
             update(argValue, args)
+
+      def setInt(argValue: String, args: List[String]) =
+        try
+          val x = argValue.toInt
+          choices match
+            case Some(r: Range) if x < r.head || r.last < x =>
+              fail(s"$argValue is out of legal range ${r.head}..${r.last} for $name", args)
+            case Some(xs) if !xs.contains(x) =>
+              fail(s"$argValue is not a valid choice for $name", args)
+            case _ =>
+              update(x, args)
+        catch case _: NumberFormatException =>
+          fail(s"$argValue is not an integer argument for $name", args)
+
       def doSet(argRest: String) = ((implicitly[ClassTag[T]], args): @unchecked) match {
         case (BooleanTag, _) =>
           update(true, args)
@@ -124,8 +132,14 @@ object Settings {
           update(Some(propertyClass.get.getConstructor().newInstance()), args)
         case (ListTag, _) =>
           if (argRest.isEmpty) missingArg
-          else update((argRest split ",").toList, args)
-        case (StringTag, _) if argRest.nonEmpty =>
+          else
+            val strings = argRest.split(",").toList
+            choices match
+              case Some(valid) => strings.filterNot(valid.contains) match
+                case Nil => update(strings, args)
+                case invalid => fail(s"invalid choice(s) for $name: ${invalid.mkString(",")}", args)
+              case _ => update(strings, args)
+        case (StringTag, _) if argRest.nonEmpty || choices.exists(_.contains("")) =>
           setString(argRest, args)
         case (StringTag, arg2 :: args2) =>
           if (arg2 startsWith "-") missingArg
@@ -139,22 +153,10 @@ object Settings {
             val output = if (isJar) JarArchive.create(path) else new PlainDirectory(path)
             update(output, args)
           }
+        case (IntTag, args) if argRest.nonEmpty =>
+          setInt(argRest, args)
         case (IntTag, arg2 :: args2) =>
-          try {
-            val x = arg2.toInt
-            choices match {
-              case Some(r: Range) if x < r.head || r.last < x =>
-                fail(s"$arg2 is out of legal range ${r.head}..${r.last} for $name", args2)
-              case Some(xs) if !xs.contains(x) =>
-                fail(s"$arg2 is not a valid choice for $name", args)
-              case _ =>
-                update(x, args2)
-            }
-          }
-          catch {
-            case _: NumberFormatException =>
-              fail(s"$arg2 is not an integer argument for $name", args2)
-          }
+          setInt(arg2, args2)
         case (VersionTag, _) =>
           ScalaVersion.parse(argRest) match {
             case Success(v) => update(v, args)
@@ -175,13 +177,11 @@ object Settings {
     }
   }
 
-  object Setting {
-    extension [T](setting: Setting[T]) {
+  object Setting:
+    extension [T](setting: Setting[T])
       def value(using Context): T = setting.valueIn(ctx.settingsState)
       def update(x: T)(using Context): SettingsState = setting.updateIn(ctx.settingsState, x)
       def isDefault(using Context): Boolean = setting.isDefaultIn(ctx.settingsState)
-    }
-  }
 
   class SettingGroup {
 
@@ -209,7 +209,7 @@ object Settings {
     /** Iterates over the arguments applying them to settings where applicable.
      *  Then verifies setting dependencies are met.
      *
-     *  This temporarily takes a boolean indicating whether to keep
+     *  This takes a boolean indicating whether to keep
      *  processing if an argument is seen which is not a command line option.
      *  This is an expedience for the moment so that you can say
      *
@@ -221,28 +221,27 @@ object Settings {
      *
      *  to get their arguments.
      */
-    def processArguments(state: ArgsSummary, processAll: Boolean, skipped: List[String]): ArgsSummary = {
+    @tailrec
+    final def processArguments(state: ArgsSummary, processAll: Boolean, skipped: List[String]): ArgsSummary =
       def stateWithArgs(args: List[String]) = ArgsSummary(state.sstate, args, state.errors, state.warnings)
-      state.arguments match {
+      state.arguments match
         case Nil =>
           checkDependencies(stateWithArgs(skipped))
         case "--" :: args =>
           checkDependencies(stateWithArgs(skipped ++ args))
         case x :: _ if x startsWith "-" =>
-          @tailrec def loop(settings: List[Setting[?]]): ArgsSummary = settings match {
+          @tailrec def loop(settings: List[Setting[?]]): ArgsSummary = settings match
             case setting :: settings1 =>
               val state1 = setting.tryToSet(state)
-              if (state1 ne state) processArguments(state1, processAll, skipped)
+              if state1 ne state then state1
               else loop(settings1)
             case Nil =>
-              processArguments(state.warn(s"bad option '$x' was ignored"), processAll, skipped)
-          }
-          loop(allSettings.toList)
+              state.warn(s"bad option '$x' was ignored")
+          processArguments(loop(allSettings.toList), processAll, skipped)
         case arg :: args =>
-          if (processAll) processArguments(stateWithArgs(args), processAll, skipped :+ arg)
+          if processAll then processArguments(stateWithArgs(args), processAll, skipped :+ arg)
           else state
-      }
-    }
+    end processArguments
 
     def processArguments(arguments: List[String], processAll: Boolean, settingsState: SettingsState = defaultState): ArgsSummary =
       processArguments(ArgsSummary(settingsState, arguments, Nil, Nil), processAll, Nil)
@@ -262,14 +261,17 @@ object Settings {
     def ChoiceSetting(name: String, helpArg: String, descr: String, choices: List[String], default: String, aliases: List[String] = Nil): Setting[String] =
       publish(Setting(name, descr, default, helpArg, Some(choices), aliases = aliases))
 
+    def MultiChoiceSetting(name: String, helpArg: String, descr: String, choices: List[String], default: List[String], aliases: List[String] = Nil): Setting[List[String]] =
+      publish(Setting(name, descr, default, helpArg, Some(choices), aliases = aliases))
+
     def IntSetting(name: String, descr: String, default: Int, aliases: List[String] = Nil): Setting[Int] =
       publish(Setting(name, descr, default, aliases = aliases))
 
     def IntChoiceSetting(name: String, descr: String, choices: Seq[Int], default: Int): Setting[Int] =
       publish(Setting(name, descr, default, choices = Some(choices)))
 
-    def MultiStringSetting(name: String, helpArg: String, descr: String, aliases: List[String] = Nil): Setting[List[String]] =
-      publish(Setting(name, descr, Nil, helpArg, aliases = aliases))
+    def MultiStringSetting(name: String, helpArg: String, descr: String, default: List[String] = Nil, aliases: List[String] = Nil): Setting[List[String]] =
+      publish(Setting(name, descr, default, helpArg, aliases = aliases))
 
     def OutputSetting(name: String, helpArg: String, descr: String, default: AbstractFile): Setting[AbstractFile] =
       publish(Setting(name, descr, default, helpArg))
@@ -289,4 +291,4 @@ object Settings {
     def OptionSetting[T: ClassTag](name: String, descr: String, aliases: List[String] = Nil): Setting[Option[T]] =
       publish(Setting(name, descr, None, propertyClass = Some(implicitly[ClassTag[T]].runtimeClass), aliases = aliases))
   }
-}
+end Settings

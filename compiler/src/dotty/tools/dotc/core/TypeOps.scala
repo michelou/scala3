@@ -6,7 +6,6 @@ import Contexts._, Types._, Symbols._, Names._, Flags._
 import SymDenotations._
 import util.Spans._
 import util.Stats
-import NameKinds.DepParamName
 import Decorators._
 import StdNames._
 import collection.mutable
@@ -138,6 +137,8 @@ object TypeOps:
             tp2
           case tp1 => tp1
         }
+      case defn.MatchCase(pat, body) =>
+        defn.MatchCase(simplify(pat, theMap), body)
       case tp: AppliedType =>
         tp.tycon match
           case tycon: TypeRef if tycon.info.isInstanceOf[MatchAlias] =>
@@ -163,14 +164,22 @@ object TypeOps:
         // with Nulls (which have no base classes). Under -Yexplicit-nulls, we take
         // corrective steps, so no widening is wanted.
         simplify(l, theMap) | simplify(r, theMap)
-      case AnnotatedType(parent, annot)
-      if !ctx.mode.is(Mode.Type) && annot.symbol == defn.UncheckedVarianceAnnot =>
-        simplify(parent, theMap)
+      case tp @ AnnotatedType(parent, annot) =>
+        val parent1 = simplify(parent, theMap)
+        if annot.symbol == defn.UncheckedVarianceAnnot
+            && !ctx.mode.is(Mode.Type)
+            && !theMap.isInstanceOf[SimplifyKeepUnchecked]
+        then parent1
+        else tp.derivedAnnotatedType(parent1, annot)
       case _: MatchType =>
         val normed = tp.tryNormalize
         if (normed.exists) normed else mapOver
       case tp: MethodicType =>
         tp // See documentation of `Types#simplified`
+      case tp: SkolemType =>
+        // Mapping over a skolem creates a new skolem which by definition won't
+        // be =:= to the original one.
+        tp
       case _ =>
         mapOver
     }
@@ -179,6 +188,8 @@ object TypeOps:
   class SimplifyMap(using Context) extends TypeMap {
     def apply(tp: Type): Type = simplify(tp, this)
   }
+
+  class SimplifyKeepUnchecked(using Context) extends SimplifyMap
 
   /** Approximate union type by intersection of its dominators.
    *  That is, replace a union type Tn | ... | Tn
@@ -343,7 +354,12 @@ object TypeOps:
 
     tp match {
       case tp: OrType =>
-        approximateOr(tp.tp1, tp.tp2)
+        (tp.tp1.dealias, tp.tp2.dealias) match
+          case (tp1 @ AppliedType(tycon1, args1), tp2 @ AppliedType(tycon2, args2))
+          if tycon1.typeSymbol == tycon2.typeSymbol && (tycon1 =:= tycon2) =>
+            mergeRefinedOrApplied(tp1, tp2)
+          case (tp1, tp2) =>
+            approximateOr(tp1, tp2)
       case _ =>
         tp
     }
@@ -394,93 +410,109 @@ object TypeOps:
     }
   }
 
-  /** An upper approximation of the given type `tp` that does not refer to any symbol in `symsToAvoid`.
+  /** An approximating map that drops NamedTypes matching `toAvoid` and wildcard types. */
+  abstract class AvoidMap(using Context) extends AvoidWildcardsMap:
+    @threadUnsafe lazy val localParamRefs = util.HashSet[Type]()
+
+    def toAvoid(tp: NamedType): Boolean
+
+    /** True iff all NamedTypes on this prefix are static */
+    override def isStaticPrefix(pre: Type)(using Context): Boolean = pre match
+      case pre: NamedType =>
+        val sym = pre.currentSymbol
+        sym.is(Package) || sym.isStatic && isStaticPrefix(pre.prefix)
+      case _ => true
+
+    override def apply(tp: Type): Type = tp match
+      case tp: TermRef
+      if toAvoid(tp) =>
+        tp.info.widenExpr.dealias match {
+          case info: SingletonType => apply(info)
+          case info => range(defn.NothingType, apply(info))
+        }
+      case tp: TypeRef if toAvoid(tp) =>
+        tp.info match {
+          case info: AliasingBounds =>
+            apply(info.alias)
+          case TypeBounds(lo, hi) =>
+            range(atVariance(-variance)(apply(lo)), apply(hi))
+          case info: ClassInfo =>
+            range(defn.NothingType, apply(classBound(info)))
+          case _ =>
+            emptyRange // should happen only in error cases
+        }
+      case tp: ThisType =>
+        // ThisType is only used inside a class.
+        // Therefore, either they don't appear in the type to be avoided, or
+        // it must be a class that encloses the block whose type is to be avoided.
+        tp
+      case tp: LazyRef =>
+        if localParamRefs.contains(tp.ref) then tp
+        else if isExpandingBounds then emptyRange
+        else mapOver(tp)
+      case tl: HKTypeLambda =>
+        localParamRefs ++= tl.paramRefs
+        mapOver(tl)
+      case _ =>
+        super.apply(tp)
+    end apply
+
+    /** Three deviations from standard derivedSelect:
+     *   1. We first try a widening conversion to the type's info with
+     *      the original prefix. Since the original prefix is known to
+     *      be a subtype of the returned prefix, this can improve results.
+     *   2. Then, if the approximation result is a singleton reference C#x.type, we
+     *      replace by the widened type, which is usually more natural.
+     *   3. Finally, we need to handle the case where the prefix type does not have a member
+     *      named `tp.name` anymmore. In that case, we need to fall back to Bot..Top.
+     */
+    override def derivedSelect(tp: NamedType, pre: Type) =
+      if (pre eq tp.prefix)
+        tp
+      else tryWiden(tp, tp.prefix).orElse {
+        if (tp.isTerm && variance > 0 && !pre.isSingleton)
+          apply(tp.info.widenExpr)
+        else if (upper(pre).member(tp.name).exists)
+          super.derivedSelect(tp, pre)
+        else
+          range(defn.NothingType, defn.AnyType)
+      }
+  end AvoidMap
+
+  /** An upper approximation of the given type `tp` that does not refer to any symbol in `symsToAvoid`
+   *  and does not contain any WildcardType.
    *  We need to approximate with ranges:
    *
    *    term references to symbols in `symsToAvoid`,
    *    term references that have a widened type of which some part refers
    *    to a symbol in `symsToAvoid`,
    *    type references to symbols in `symsToAvoid`,
-   *    this types of classes in `symsToAvoid`.
    *
    *  Type variables that would be interpolated to a type that
    *  needs to be widened are replaced by the widened interpolation instance.
+   *
+   *  TODO: Could we replace some or all usages of this method by
+   *  `LevelAvoidMap` instead? It would be good to investigate this in details
+   *  but when I tried it, avoidance for inlined trees broke because `TreeMap`
+   *  does not update `ctx.nestingLevel` when entering a block so I'm leaving
+   *  this as Future Work™.
    */
   def avoid(tp: Type, symsToAvoid: => List[Symbol])(using Context): Type = {
-    val widenMap = new ApproximatingTypeMap {
+    val widenMap = new AvoidMap {
       @threadUnsafe lazy val forbidden = symsToAvoid.toSet
-      @threadUnsafe lazy val localParamRefs = util.HashSet[Type]()
-      def toAvoid(sym: Symbol) = !sym.isStatic && forbidden.contains(sym)
-      def partsToAvoid = new NamedPartsAccumulator(tp => toAvoid(tp.symbol))
+      def toAvoid(tp: NamedType) =
+        val sym = tp.symbol
+        !sym.isStatic && forbidden.contains(sym)
 
-      /** True iff all NamedTypes on this prefix are static */
-      override def isStaticPrefix(pre: Type)(using Context): Boolean = pre match
-        case pre: NamedType =>
-          val sym = pre.currentSymbol
-          sym.is(Package) || sym.isStatic && isStaticPrefix(pre.prefix)
-        case _ => true
-
-      def apply(tp: Type): Type = tp match {
-        case tp: TermRef
-        if toAvoid(tp.symbol) || partsToAvoid(Nil, tp.info).nonEmpty =>
-          tp.info.widenExpr.dealias match {
-            case info: SingletonType => apply(info)
-            case info => range(defn.NothingType, apply(info))
-          }
-        case tp: TypeRef if toAvoid(tp.symbol) =>
-          tp.info match {
-            case info: AliasingBounds =>
-              apply(info.alias)
-            case TypeBounds(lo, hi) =>
-              range(atVariance(-variance)(apply(lo)), apply(hi))
-            case info: ClassInfo =>
-              range(defn.NothingType, apply(classBound(info)))
-            case _ =>
-              emptyRange // should happen only in error cases
-          }
-        case tp: ThisType =>
-          // ThisType is only used inside a class.
-          // Therefore, either they don't appear in the type to be avoided, or
-          // it must be a class that encloses the block whose type is to be avoided.
-          tp
-        case tp: SkolemType if partsToAvoid(Nil, tp.info).nonEmpty =>
-          range(defn.NothingType, apply(tp.info))
+      override def apply(tp: Type): Type = tp match
         case tp: TypeVar if mapCtx.typerState.constraint.contains(tp) =>
           val lo = TypeComparer.instanceType(
             tp.origin, fromBelow = variance > 0 || variance == 0 && tp.hasLowerBound)(using mapCtx)
           val lo1 = apply(lo)
           if (lo1 ne lo) lo1 else tp
-        case tp: LazyRef =>
-          if localParamRefs.contains(tp.ref) then tp
-          else if isExpandingBounds then emptyRange
-          else mapOver(tp)
-        case tl: HKTypeLambda =>
-          localParamRefs ++= tl.paramRefs
-          mapOver(tl)
         case _ =>
-          mapOver(tp)
-      }
-
-      /** Three deviations from standard derivedSelect:
-       *   1. We first try a widening conversion to the type's info with
-       *      the original prefix. Since the original prefix is known to
-       *      be a subtype of the returned prefix, this can improve results.
-       *   2. Then, if the approximation result is a singleton reference C#x.type, we
-       *      replace by the widened type, which is usually more natural.
-       *   3. Finally, we need to handle the case where the prefix type does not have a member
-       *      named `tp.name` anymmore. In that case, we need to fall back to Bot..Top.
-       */
-      override def derivedSelect(tp: NamedType, pre: Type) =
-        if (pre eq tp.prefix)
-          tp
-        else tryWiden(tp, tp.prefix).orElse {
-          if (tp.isTerm && variance > 0 && !pre.isSingleton)
-          	apply(tp.info.widenExpr)
-          else if (upper(pre).member(tp.name).exists)
-            super.derivedSelect(tp, pre)
-          else
-            range(defn.NothingType, defn.AnyType)
-        }
+          super.apply(tp)
+      end apply
     }
 
     widenMap(tp)
@@ -685,14 +717,28 @@ object TypeOps:
    */
   private def instantiateToSubType(tp1: NamedType, tp2: Type)(using Context): Type = {
     // In order for a child type S to qualify as a valid subtype of the parent
-    // T, we need to test whether it is possible S <: T. Therefore, we replace
-    // type parameters in T with tvars, and see if the subtyping is true.
-    val approximateTypeParams = new TypeMap {
+    // T, we need to test whether it is possible S <: T.
+    //
+    // The check is different from subtype checking due to type parameters and
+    // `this`. We perform the following operations to approximate the parameters:
+    //
+    // 1. Replace type parameters in T with tvars
+    // 2. Replace `A.this.C` with `A#C` (see tests/patmat/i12681.scala)
+    // 3. Replace non-reducing MatchType with its bound
+    //
+    val approximateParent = new TypeMap {
       val boundTypeParams = util.HashMap[TypeRef, TypeVar]()
 
       def apply(tp: Type): Type = tp.dealias match {
-        case _: MatchType =>
-          tp // break cycles
+        case tp: MatchType =>
+          val reduced = tp.reduced
+          if reduced.exists then tp // break cycles
+          else mapOver(tp.bound) // if the match type doesn't statically reduce
+                                 // then to avoid it failing the <:<
+                                 // we'll approximate by widening to its bounds
+
+        case ThisType(tref: TypeRef) if !tref.symbol.isStaticOwner =>
+          tref
 
         case tp: TypeRef if !tp.symbol.isClass =>
           def lo = LazyRef.of(apply(tp.underlying.loBound))
@@ -710,7 +756,7 @@ object TypeOps:
             tv
           end if
 
-        case AppliedType(tycon: TypeRef, _) if !tycon.dealias.typeSymbol.isClass =>
+        case tp @ AppliedType(tycon: TypeRef, _) if !tycon.dealias.typeSymbol.isClass && !tp.isMatchAlias =>
 
           // In tests/patmat/i3645g.scala, we need to tell whether it's possible
           // that K1 <: K[Foo]. If yes, we issue a warning; otherwise, no
@@ -762,7 +808,8 @@ object TypeOps:
             this(tref)
           else {
             prefixTVar = WildcardType  // prevent recursive call from assigning it
-            prefixTVar = newTypeVar(TypeBounds.upper(this(tref)))
+            val tref2 = this(tref.applyIfParameterized(tref.typeParams.map(_ => TypeBounds.empty)))
+            prefixTVar = newTypeVar(TypeBounds.upper(tref2))
             prefixTVar
           }
         case tp => mapOver(tp)
@@ -779,7 +826,7 @@ object TypeOps:
     // we manually patch subtyping check instead of changing TypeComparer.
     // See tests/patmat/i3645b.scala
     def parentQualify(tp1: Type, tp2: Type) = tp1.classSymbol.info.parents.exists { parent =>
-      parent.argInfos.nonEmpty && approximateTypeParams(parent) <:< tp2
+      parent.argInfos.nonEmpty && approximateParent(parent) <:< tp2
     }
 
     def instantiate(): Type = {
@@ -789,13 +836,20 @@ object TypeOps:
 
     if (protoTp1 <:< tp2) instantiate()
     else {
-      val protoTp2 = approximateTypeParams(tp2)
-      if (protoTp1 <:< protoTp2 || parentQualify(protoTp1, protoTp2)) instantiate()
+      val approxTp2 = approximateParent(tp2)
+      if (protoTp1 <:< approxTp2 || parentQualify(protoTp1, approxTp2)) instantiate()
       else NoType
     }
   }
 
   def nestedPairs(ts: List[Type])(using Context): Type =
     ts.foldRight(defn.EmptyTupleModule.termRef: Type)(defn.PairClass.typeRef.appliedTo(_, _))
+
+  class StripTypeVarsMap(using Context) extends TypeMap:
+    def apply(tp: Type) = mapOver(tp).stripTypeVar
+
+  /** Apply [[Type.stripTypeVar]] recursively. */
+  def stripTypeVars(tp: Type)(using Context): Type =
+    new StripTypeVarsMap().apply(tp)
 
 end TypeOps

@@ -111,7 +111,9 @@ class JUnitBootstrappers extends MiniPhase {
   import JUnitBootstrappers._
   import ast.tpd._
 
-  def phaseName: String = "junitBootstrappers"
+  override def phaseName: String = JUnitBootstrappers.name
+
+  override def description: String = JUnitBootstrappers.description
 
   override def isEnabled(using Context): Boolean =
     super.isEnabled && ctx.settings.scalajs.value
@@ -223,7 +225,7 @@ class JUnitBootstrappers extends MiniPhase {
 
     DefDef(sym, {
       val metadata = for (test <- tests) yield {
-        val name = Literal(Constant(test.name.toString))
+        val name = Literal(Constant(test.name.mangledString))
         val ignored = Literal(Constant(test.hasAnnotation(junitdefn.IgnoreAnnotClass)))
         val testAnnot = test.getAnnotation(junitdefn.TestAnnotClass).get
 
@@ -266,7 +268,7 @@ class JUnitBootstrappers extends MiniPhase {
           val tp = junitdefn.NoSuchMethodExceptionType
           Throw(resolveConstructor(tp, nameParamRef :: Nil))
         } { (test, next) =>
-          If(Literal(Constant(test.name.toString)).select(defn.Any_equals).appliedTo(nameParamRef),
+          If(Literal(Constant(test.name.mangledString)).select(defn.Any_equals).appliedTo(nameParamRef),
             genTestInvocation(testClass, test, ref(castInstanceSym)),
             next)
         }
@@ -312,6 +314,8 @@ class JUnitBootstrappers extends MiniPhase {
 }
 
 object JUnitBootstrappers {
+  val name: String = "junitBootstrappers"
+  val description: String = "generate JUnit-specific bootstrapper classes for Scala.js"
 
   private object junitNme {
     val beforeClass: TermName = termName("beforeClass")

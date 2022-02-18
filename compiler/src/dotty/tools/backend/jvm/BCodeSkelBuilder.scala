@@ -70,7 +70,7 @@ trait BCodeSkelBuilder extends BCodeHelpers {
     with    BCJGenSigGen {
 
     // Strangely I can't find this in the asm code 255, but reserving 1 for "this"
-    final val MaximumJvmParameters = 254
+    inline val MaximumJvmParameters = 254
 
     // current class
     var cnode: ClassNode1          = null
@@ -139,6 +139,7 @@ trait BCodeSkelBuilder extends BCodeHelpers {
         // See `tests/run/given-var.scala`
         //
 
+        // !!! Part of this logic is duplicated in JSCodeGen.genCompilationUnit
         claszSymbol.info.decls.foreach { f =>
           if f.isField && !f.name.is(LazyBitMapName) then
             f.setFlag(JavaStatic)
@@ -206,7 +207,7 @@ trait BCodeSkelBuilder extends BCodeHelpers {
       val optSerial: Option[Long] =
         claszSymbol.getAnnotation(defn.SerialVersionUIDAnnot).flatMap { annot =>
           if (claszSymbol.is(Trait)) {
-            report.error("@SerialVersionUID does nothing on a trait", annot.tree.sourcePos)
+            report.warning("@SerialVersionUID does nothing on a trait", annot.tree.sourcePos)
             None
           } else {
             val vuid = annot.argumentConstant(0).map(_.longValue)
@@ -291,7 +292,7 @@ trait BCodeSkelBuilder extends BCodeHelpers {
       emitAnnotations(cnode, claszSymbol.annotations ++ ssa)
 
       if (!isCZStaticModule && !isCZParcelable) {
-        val skipStaticForwarders = (claszSymbol.isInterface || claszSymbol.is(Module) || ctx.settings.XnoForwarders.value)
+        val skipStaticForwarders = (claszSymbol.is(Module) || ctx.settings.XnoForwarders.value)
         if (!skipStaticForwarders) {
           val lmoc = claszSymbol.companionModule
           // add static forwarders if there are no name conflicts; see bugs #363 and #1735

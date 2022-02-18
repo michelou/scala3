@@ -51,6 +51,16 @@ object ErrorReporting {
       case _ =>
         report.error(em"missing arguments for $meth", tree.srcPos)
 
+  def matchReductionAddendum(tps: Type*)(using Context): String =
+    val collectMatchTrace = new TypeAccumulator[String]:
+      def apply(s: String, tp: Type): String =
+        if s.nonEmpty then s
+        else tp match
+          case tp: AppliedType if tp.isMatchAlias => MatchTypeTrace.record(tp.tryNormalize)
+          case tp: MatchType => MatchTypeTrace.record(tp.tryNormalize)
+          case _ => foldOver(s, tp)
+    tps.foldLeft("")(collectMatchTrace)
+
   class Errors(using Context) {
 
     /** An explanatory note to be added to error messages
@@ -121,7 +131,7 @@ object ErrorReporting {
         case If(_, _, elsep @ Literal(Constant(()))) if elsep.span.isSynthetic =>
           "\nMaybe you are missing an else part for the conditional?"
         case _ => ""
-      errorTree(tree, TypeMismatch(treeTp, pt, implicitFailure.whyNoConversion, missingElse))
+      errorTree(tree, TypeMismatch(treeTp, pt, Some(tree), implicitFailure.whyNoConversion, missingElse))
     }
 
     /** A subtype log explaining why `found` does not conform to `expected` */
@@ -132,18 +142,17 @@ object ErrorReporting {
           |conforms to
           |  $expected
           |but the comparison trace ended with `false`:
-          """
+          |"""
       val c = ctx.typerState.constraint
       val constraintText =
         if c.domainLambdas.isEmpty then
           "the empty constraint"
         else
           i"""a constraint with:
-             |${c.contentsToString}"""
-      i"""
-        |${TypeComparer.explained(_.isSubType(found, expected), header)}
-        |
-        |The tests were made under $constraintText"""
+             |$c"""
+      i"""${TypeComparer.explained(_.isSubType(found, expected), header)}
+         |
+         |The tests were made under $constraintText"""
 
     /** Format `raw` implicitNotFound or implicitAmbiguous argument, replacing
      *  all occurrences of `${X}` where `X` is in `paramNames` with the
@@ -230,7 +239,6 @@ object ErrorReporting {
   def err(using Context): Errors = new Errors
 }
 
-
 class ImplicitSearchError(
   arg: tpd.Tree,
   pt: Type,
@@ -239,6 +247,7 @@ class ImplicitSearchError(
   ignoredInstanceNormalImport: => Option[SearchSuccess],
   importSuggestionAddendum: => String
 )(using ctx: Context) {
+
   def missingArgMsg = arg.tpe match {
     case ambi: AmbiguousImplicits =>
       (ambi.alt1, ambi.alt2) match {
@@ -253,7 +262,9 @@ class ImplicitSearchError(
       val shortMessage = userDefinedImplicitNotFoundParamMessage
         .orElse(userDefinedImplicitNotFoundTypeMessage)
         .getOrElse(defaultImplicitNotFoundMessage)
-      formatMsg(shortMessage)() ++ hiddenImplicitsAddendum
+      formatMsg(shortMessage)()
+      ++ hiddenImplicitsAddendum
+      ++ ErrorReporting.matchReductionAddendum(pt)
   }
 
   private def formatMsg(shortForm: String)(headline: String = shortForm) = arg match {
@@ -303,7 +314,7 @@ class ImplicitSearchError(
   }
 
   private def defaultImplicitNotFoundMessage = {
-    em"no implicit argument of type $pt was found${location("for")}"
+    ex"no implicit argument of type $pt was found${location("for")}"
   }
 
   /** Construct a custom error message given an ambiguous implicit
@@ -402,7 +413,7 @@ class ImplicitSearchError(
 
   private def hiddenImplicitsAddendum: String =
     def hiddenImplicitNote(s: SearchSuccess) =
-      em"\n\nNote: given instance ${s.ref.symbol.showLocated} was not considered because it was not imported with `import given`."
+      em"\n\nNote: ${s.ref.symbol.showLocated} was not considered because it was not imported with `import given`."
 
     val normalImports = ignoredInstanceNormalImport.map(hiddenImplicitNote)
 

@@ -35,6 +35,8 @@ class ResolveSuper extends MiniPhase with IdentityDenotTransformer { thisPhase =
 
   override def phaseName: String = ResolveSuper.name
 
+  override def description: String = ResolveSuper.description
+
   override def runsAfter: Set[String] = Set(ElimByName.name, // verified empirically, need to figure out what the reason is.
                                PruneErasedDefs.name) // Erased decls make `isCurrent` work incorrectly
 
@@ -72,6 +74,7 @@ class ResolveSuper extends MiniPhase with IdentityDenotTransformer { thisPhase =
 
 object ResolveSuper {
   val name: String = "resolveSuper"
+  val description: String = "implement super accessors"
 
   /** Returns the symbol that is accessed by a super-accessor in a mixin composition.
    *
@@ -107,7 +110,14 @@ object ResolveSuper {
         // of the superaccessor's type, see i5433.scala for an example where this matters
         val otherTp = other.asSeenFrom(base.typeRef).info
         val accTp = acc.asSeenFrom(base.typeRef).info
-        if (!(otherTp.overrides(accTp, matchLoosely = true)))
+        // Since the super class can be Java defined,
+        // we use releaxed overriding check for explicit nulls if one of the symbols is Java defined.
+        // This forces `Null` being a subtype of reference types during override checking.
+        val relaxedCtxForNulls =
+        if ctx.explicitNulls && (sym.is(JavaDefined) || acc.is(JavaDefined)) then
+          ctx.retractMode(Mode.SafeNulls)
+        else ctx
+        if (!(otherTp.overrides(accTp, matchLoosely = true)(using relaxedCtxForNulls)))
           report.error(IllegalSuperAccessor(base, memberName, targetName, acc, accTp, other.symbol, otherTp), base.srcPos)
 
       bcs = bcs.tail

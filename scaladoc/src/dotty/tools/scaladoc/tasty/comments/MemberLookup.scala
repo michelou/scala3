@@ -1,28 +1,29 @@
 package dotty.tools.scaladoc
-package tasty.comments
+package tasty
+package comments
 
 import scala.quoted._
 
 trait MemberLookup {
 
   def memberLookupResult(using Quotes)(
-    symbol: quotes.reflect.Symbol,
+    symbol: reflect.Symbol,
     label: String,
-    inheritingParent: Option[quotes.reflect.Symbol] = None
-  ): (quotes.reflect.Symbol, String, Option[quotes.reflect.Symbol]) =
+    inheritingParent: Option[reflect.Symbol] = None
+  ): (reflect.Symbol, String, Option[reflect.Symbol]) =
     (symbol, label, inheritingParent)
 
   def lookup(using Quotes, DocContext)(
     query: Query,
-    owner: quotes.reflect.Symbol,
-  ): Option[(quotes.reflect.Symbol, String, Option[quotes.reflect.Symbol])] = lookupOpt(query, Some(owner))
+    owner: reflect.Symbol,
+  ): Option[(reflect.Symbol, String, Option[reflect.Symbol])] = lookupOpt(query, Some(owner))
 
   def lookupOpt(using Quotes, DocContext)(
     query: Query,
-    ownerOpt: Option[quotes.reflect.Symbol],
-  ): Option[(quotes.reflect.Symbol, String, Option[quotes.reflect.Symbol])] =
+    ownerOpt: Option[reflect.Symbol],
+  ): Option[(reflect.Symbol, String, Option[reflect.Symbol])] =
     try
-      import quotes.reflect._
+      import reflect._
 
       def nearestClass(sym: Symbol): Symbol =
         if sym.isClassDef then sym else nearestClass(sym.owner)
@@ -85,13 +86,13 @@ trait MemberLookup {
       res
     catch
       case e: Exception =>
-        // TODO (https://github.com/lampepfl/scala3doc/issues/238): proper reporting
-        val msg = s"Unable to find a link for ${query} ${ownerOpt.fold("")(o => "in " + o.name)}"
-        report.warn(msg, e)
+        if (!summon[DocContext].args.noLinkWarnings) then
+          val msg = s"Unable to find a link for ${query} ${ownerOpt.fold("")(o => "in " + o.name)}"
+          report.warn(msg, e)
         None
 
-  private def hackMembersOf(using Quotes)(rsym: quotes.reflect.Symbol) = {
-    import quotes.reflect._
+  private def hackMembersOf(using Quotes)(rsym: reflect.Symbol) = {
+    import reflect._
     import dotty.tools.dotc
     given dotc.core.Contexts.Context = quotes.asInstanceOf[scala.quoted.runtime.impl.QuotesImpl].ctx
     val sym = rsym.asInstanceOf[dotc.core.Symbols.Symbol]
@@ -103,19 +104,21 @@ trait MemberLookup {
     members.asInstanceOf[Iterator[Symbol]]
   }
 
-  private def hackIsNotAbsent(using Quotes)(rsym: quotes.reflect.Symbol) = {
+  private def hackIsNotAbsent(using Quotes)(rsym: reflect.Symbol) =
     import dotty.tools.dotc
     given dotc.core.Contexts.Context = quotes.asInstanceOf[scala.quoted.runtime.impl.QuotesImpl].ctx
     val sym = rsym.asInstanceOf[dotc.core.Symbols.Symbol]
     // note: Predef has .info = NoType for some reason
-    sym.isCompleted && sym.info.exists
-  }
+    val iorc = sym.infoOrCompleter
+    iorc match
+      case _: dotc.core.SymDenotations.ModuleCompleter | dotc.core.SymDenotations.NoCompleter | dotc.core.Types.NoType | _: dotc.core.NoLoader => false
+      case _ => true
 
   private def localLookup(using Quotes)(
     sel: MemberLookup.Selector,
-    owner: quotes.reflect.Symbol
-  ): Iterator[quotes.reflect.Symbol] = {
-    import quotes.reflect._
+    owner: reflect.Symbol
+  ): Iterator[reflect.Symbol] = {
+    import reflect._
 
     def findMatch(syms: Iterator[Symbol]): Iterator[Symbol] = {
       def matches(s: Symbol): Boolean =
@@ -148,10 +151,7 @@ trait MemberLookup {
     }
 
     if owner.isPackageDef then
-      findMatch(hackMembersOf(owner).flatMap {
-        s =>
-          (if s.name.endsWith("package$") then hackMembersOf(s) else Iterator.empty) ++ Iterator(s)
-      })
+      findMatch(hackMembersOf(owner))
     else
       owner.tree match {
         case tree: TypeDef =>
@@ -171,9 +171,9 @@ trait MemberLookup {
   }
 
   private def downwardLookup(using Quotes)(
-    query: List[String], owner: quotes.reflect.Symbol
-  ): Option[(quotes.reflect.Symbol, Option[quotes.reflect.Symbol])] = {
-    import quotes.reflect._
+    query: List[String], owner: reflect.Symbol
+  ): Option[(reflect.Symbol, Option[reflect.Symbol])] = {
+    import reflect._
     query match {
       case Nil => None
       case q :: Nil =>
@@ -191,9 +191,9 @@ trait MemberLookup {
         res match {
           case None => None
           case Some(sym) =>
-            val externalOwner: Option[quotes.reflect.Symbol] =
+            val externalOwner: Option[reflect.Symbol] =
               if owner eq sym.owner then None
-              else if owner.flags.is(Flags.Module) then Some(owner.moduleClass)
+              else if owner.flags.is(Flags.Module) && !owner.flags.is(Flags.Package) then Some(owner.moduleClass)
               else if owner.isClassDef then Some(owner)
               else None
             Some(sym -> externalOwner)
